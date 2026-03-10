@@ -323,11 +323,16 @@
       // Version changed, need re-consent — fall through to show banner
     }
 
-    // Show banner
+    // Show banner and record the impression
+    function showBanner(cfg) {
+      renderBanner(cfg);
+      recordConsent('show', {}, cfg.version || 1);
+    }
+
     if (document.body) {
-      renderBanner(config);
+      showBanner(config);
     } else {
-      document.addEventListener('DOMContentLoaded', function() { renderBanner(config); });
+      document.addEventListener('DOMContentLoaded', function() { showBanner(config); });
     }
   });
 })();

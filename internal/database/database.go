@@ -108,22 +108,35 @@ func New(path string) (*DB, error) {
 	}
 
 	// Enable WAL mode and other optimizations via connection string
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_cache_size=-20000", path)
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_cache_size=-20000", path)
 
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// SQLite with WAL allows concurrent reads + single writer.
-	// We need more than 1 conn so reads don't block behind writes.
-	conn.SetMaxOpenConns(4)
-	conn.SetMaxIdleConns(4)
+	// Single connection serializes all writes — database/sql blocks goroutines
+	// waiting for a connection, preventing SQLITE_BUSY entirely.
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
 	conn.SetConnMaxLifetime(0)
 
 	// Test connection
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Ensure PRAGMAs are applied (DSN _-prefixed params may not be parsed by modernc.org/sqlite)
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA busy_timeout=10000",
+		"PRAGMA cache_size=-20000",
+	}
+	for _, p := range pragmas {
+		if _, err := conn.Exec(p); err != nil {
+			return nil, fmt.Errorf("failed to set %s: %w", p, err)
+		}
 	}
 
 	return &DB{conn: conn}, nil

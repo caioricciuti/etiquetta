@@ -133,7 +133,13 @@ func (h *Handlers) RecordConsent(w http.ResponseWriter, r *http.Request) {
 	enriched := h.enricher.Enrich(clientIP, userAgent, "")
 	geoCountry := enriched.GeoCountry
 
-	categoriesJSON, _ := json.Marshal(req.Categories)
+	// For 'show' events, categories are optional (empty object)
+	var categoriesJSON []byte
+	if req.Categories != nil {
+		categoriesJSON, _ = json.Marshal(req.Categories)
+	} else {
+		categoriesJSON = []byte("{}")
+	}
 
 	now := time.Now().UnixMilli()
 	id := generateID()
@@ -356,38 +362,127 @@ func (h *Handlers) GetConsentAnalytics(w http.ResponseWriter, r *http.Request) {
 	domainID := chi.URLParam(r, "domainId")
 	startMs, endMs := getDateRangeParams(r, 30)
 
-	var totalRecords, acceptAll, rejectAll, custom int
-	h.db.Conn().QueryRow(`
-		SELECT COUNT(*) FROM consent_records
+	// Action counts (single query)
+	var shows, acceptAll, rejectAll, custom int
+	rows, err := h.db.Conn().Query(`
+		SELECT action, COUNT(*) as cnt
+		FROM consent_records
 		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ?
-	`, domainID, startMs, endMs).Scan(&totalRecords)
+		GROUP BY action
+	`, domainID, startMs, endMs)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var action string
+			var cnt int
+			if rows.Scan(&action, &cnt) == nil {
+				switch action {
+				case "show":
+					shows = cnt
+				case "accept_all":
+					acceptAll = cnt
+				case "reject_all":
+					rejectAll = cnt
+				case "custom":
+					custom = cnt
+				}
+			}
+		}
+	}
 
-	h.db.Conn().QueryRow(`
-		SELECT COUNT(*) FROM consent_records
-		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ? AND action = 'accept_all'
-	`, domainID, startMs, endMs).Scan(&acceptAll)
+	totalResponses := acceptAll + rejectAll + custom
+	var consentRate, responseRate float64
+	if totalResponses > 0 {
+		consentRate = float64(acceptAll+custom) / float64(totalResponses)
+	}
+	if shows > 0 {
+		responseRate = float64(totalResponses) / float64(shows)
+	}
 
-	h.db.Conn().QueryRow(`
-		SELECT COUNT(*) FROM consent_records
-		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ? AND action = 'reject_all'
-	`, domainID, startMs, endMs).Scan(&rejectAll)
+	// Timeseries — daily breakdown
+	var timeseries []map[string]interface{}
+	tsRows, err := h.db.Conn().Query(`
+		SELECT date(timestamp / 1000, 'unixepoch') as day,
+			SUM(CASE WHEN action = 'show' THEN 1 ELSE 0 END) as shows,
+			SUM(CASE WHEN action = 'accept_all' THEN 1 ELSE 0 END) as accept_all,
+			SUM(CASE WHEN action = 'reject_all' THEN 1 ELSE 0 END) as reject_all,
+			SUM(CASE WHEN action = 'custom' THEN 1 ELSE 0 END) as custom
+		FROM consent_records
+		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ?
+		GROUP BY day
+		ORDER BY day ASC
+	`, domainID, startMs, endMs)
+	if err == nil {
+		defer tsRows.Close()
+		for tsRows.Next() {
+			var day string
+			var s, a, rj, c int
+			if tsRows.Scan(&day, &s, &a, &rj, &c) == nil {
+				timeseries = append(timeseries, map[string]interface{}{
+					"period":     day,
+					"shows":      s,
+					"accept_all": a,
+					"reject_all": rj,
+					"custom":     c,
+				})
+			}
+		}
+	}
+	if timeseries == nil {
+		timeseries = []map[string]interface{}{}
+	}
 
-	h.db.Conn().QueryRow(`
-		SELECT COUNT(*) FROM consent_records
-		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ? AND action = 'custom'
-	`, domainID, startMs, endMs).Scan(&custom)
-
-	var consentRate float64
-	if totalRecords > 0 {
-		consentRate = float64(acceptAll+custom) / float64(totalRecords)
+	// Geo breakdown — top countries
+	var geoBreakdown []map[string]interface{}
+	geoRows, err := h.db.Conn().Query(`
+		SELECT COALESCE(geo_country, 'Unknown') as country,
+			SUM(CASE WHEN action = 'show' THEN 1 ELSE 0 END) as shows,
+			SUM(CASE WHEN action = 'accept_all' THEN 1 ELSE 0 END) as accept_all,
+			SUM(CASE WHEN action = 'reject_all' THEN 1 ELSE 0 END) as reject_all,
+			SUM(CASE WHEN action = 'custom' THEN 1 ELSE 0 END) as custom
+		FROM consent_records
+		WHERE domain_id = ? AND timestamp >= ? AND timestamp <= ?
+		GROUP BY country
+		ORDER BY shows DESC
+		LIMIT 20
+	`, domainID, startMs, endMs)
+	if err == nil {
+		defer geoRows.Close()
+		for geoRows.Next() {
+			var country string
+			var s, a, rj, c int
+			if geoRows.Scan(&country, &s, &a, &rj, &c) == nil {
+				responses := a + rj + c
+				var rate float64
+				if responses > 0 {
+					rate = float64(a+c) / float64(responses)
+				}
+				geoBreakdown = append(geoBreakdown, map[string]interface{}{
+					"country":      country,
+					"shows":        s,
+					"responses":    responses,
+					"accept_all":   a,
+					"reject_all":   rj,
+					"custom":       c,
+					"consent_rate": rate,
+				})
+			}
+		}
+	}
+	if geoBreakdown == nil {
+		geoBreakdown = []map[string]interface{}{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_records":    totalRecords,
+		"shows":            shows,
+		"total_responses":  totalResponses,
 		"accept_all_count": acceptAll,
 		"reject_all_count": rejectAll,
 		"custom_count":     custom,
 		"consent_rate":     consentRate,
+		"response_rate":    responseRate,
+		"timeseries":       timeseries,
+		"geo_breakdown":    geoBreakdown,
 	})
 }
 

@@ -242,18 +242,40 @@ export interface ConsentRecord {
   visitor_hash: string
   categories: Record<string, boolean>
   config_version: number
-  action: 'accept_all' | 'reject_all' | 'custom'
+  action: 'show' | 'accept_all' | 'reject_all' | 'custom'
   user_agent: string
   geo_country: string
   timestamp: number
 }
 
+export interface ConsentTimeseriesPoint {
+  period: string
+  shows: number
+  accept_all: number
+  reject_all: number
+  custom: number
+}
+
+export interface ConsentGeoBreakdown {
+  country: string
+  shows: number
+  responses: number
+  accept_all: number
+  reject_all: number
+  custom: number
+  consent_rate: number
+}
+
 export interface ConsentAnalytics {
-  total_records: number
+  shows: number
+  total_responses: number
   accept_all_count: number
   reject_all_count: number
   custom_count: number
   consent_rate: number
+  response_rate: number
+  timeseries: ConsentTimeseriesPoint[]
+  geo_breakdown: ConsentGeoBreakdown[]
 }
 
 // Tag Manager types
