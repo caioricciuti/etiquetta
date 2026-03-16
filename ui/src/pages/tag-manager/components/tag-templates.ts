@@ -1,3 +1,5 @@
+import type { TriggerCondition } from '@/lib/types'
+
 export interface TagConfigField {
   key: string
   label: string
@@ -7,15 +9,39 @@ export interface TagConfigField {
   options?: { label: string; value: string }[]
 }
 
+export interface TagPrivacyMeta {
+  externalDomains: string[]
+  setsCookies: boolean
+  privacyRisk: 'low' | 'medium' | 'high'
+  privacyNote: string
+}
+
 export interface TagTemplate {
   type: string
   name: string
   description: string
   icon: string
   configFields: TagConfigField[]
+  privacy: TagPrivacyMeta
 }
 
 export const TAG_TEMPLATES: TagTemplate[] = [
+  {
+    type: 'etiquetta_event',
+    name: 'Etiquetta Event',
+    description: 'Send a custom event to Etiquetta analytics',
+    icon: 'Activity',
+    configFields: [
+      { key: 'event_name', label: 'Event Name', type: 'text', required: true, placeholder: 'e.g., purchase, signup, download' },
+      { key: 'event_props', label: 'Event Properties (JSON)', type: 'textarea', placeholder: '{"plan": "pro", "value": 99}' },
+    ],
+    privacy: {
+      externalDomains: [],
+      setsCookies: false,
+      privacyRisk: 'low',
+      privacyNote: 'First-party only. No data leaves your server.',
+    },
+  },
   {
     type: 'custom_html',
     name: 'Custom HTML',
@@ -24,6 +50,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
     configFields: [
       { key: 'html', label: 'HTML Code', type: 'textarea', required: true, placeholder: '<script>...</script>' },
     ],
+    privacy: {
+      externalDomains: [],
+      setsCookies: false,
+      privacyRisk: 'high',
+      privacyNote: 'Arbitrary code — cannot be audited automatically. May load external resources or set cookies.',
+    },
   },
   {
     type: 'ga4',
@@ -33,6 +65,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
     configFields: [
       { key: 'measurement_id', label: 'Measurement ID', type: 'text', required: true, placeholder: 'G-XXXXXXXXXX' },
     ],
+    privacy: {
+      externalDomains: ['www.googletagmanager.com', 'www.google-analytics.com'],
+      setsCookies: true,
+      privacyRisk: 'high',
+      privacyNote: 'Sends visitor data to Google. Sets _ga cookies. Requires marketing/analytics consent.',
+    },
   },
   {
     type: 'meta_pixel',
@@ -42,6 +80,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
     configFields: [
       { key: 'pixel_id', label: 'Pixel ID', type: 'text', required: true, placeholder: '123456789' },
     ],
+    privacy: {
+      externalDomains: ['connect.facebook.net'],
+      setsCookies: true,
+      privacyRisk: 'high',
+      privacyNote: 'Sends visitor data to Meta. Sets _fbp cookies. Cross-site tracking.',
+    },
   },
   {
     type: 'google_ads',
@@ -52,6 +96,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
       { key: 'conversion_id', label: 'Conversion ID', type: 'text', required: true, placeholder: 'AW-XXXXXXXXX' },
       { key: 'conversion_label', label: 'Conversion Label', type: 'text', placeholder: 'optional' },
     ],
+    privacy: {
+      externalDomains: ['www.googletagmanager.com', 'www.googleadservices.com'],
+      setsCookies: true,
+      privacyRisk: 'high',
+      privacyNote: 'Sends conversion data to Google Ads. Sets cookies for attribution.',
+    },
   },
   {
     type: 'linkedin',
@@ -61,6 +111,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
     configFields: [
       { key: 'partner_id', label: 'Partner ID', type: 'text', required: true },
     ],
+    privacy: {
+      externalDomains: ['snap.licdn.com'],
+      setsCookies: true,
+      privacyRisk: 'medium',
+      privacyNote: 'Sends page view data to LinkedIn for ad targeting.',
+    },
   },
   {
     type: 'tiktok',
@@ -70,6 +126,12 @@ export const TAG_TEMPLATES: TagTemplate[] = [
     configFields: [
       { key: 'pixel_id', label: 'Pixel ID', type: 'text', required: true },
     ],
+    privacy: {
+      externalDomains: ['analytics.tiktok.com'],
+      setsCookies: true,
+      privacyRisk: 'high',
+      privacyNote: 'Sends visitor data to TikTok. Cross-site tracking for ad attribution.',
+    },
   },
 ]
 
@@ -165,3 +227,22 @@ export const VARIABLE_CONFIG_FIELDS: Record<string, VariableConfigField[]> = {
     { key: 'value', label: 'Value', type: 'text', required: true, placeholder: 'my-constant-value' },
   ],
 }
+
+// Condition operators for trigger conditions (Feature 2)
+export const CONDITION_OPERATORS: { label: string; value: TriggerCondition['operator'] }[] = [
+  { label: 'equals', value: 'equals' },
+  { label: 'does not equal', value: 'not_equals' },
+  { label: 'contains', value: 'contains' },
+  { label: 'does not contain', value: 'not_contains' },
+  { label: 'starts with', value: 'starts_with' },
+  { label: 'ends with', value: 'ends_with' },
+  { label: 'matches regex', value: 'matches_regex' },
+]
+
+// Built-in variables available for trigger conditions
+export const BUILT_IN_CONDITION_VARIABLES: { label: string; value: string }[] = [
+  { label: 'Page Path', value: 'page_path' },
+  { label: 'Page URL', value: 'page_url' },
+  { label: 'Page Hostname', value: 'page_hostname' },
+  { label: 'Referrer', value: 'referrer' },
+]

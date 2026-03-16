@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { TAG_TEMPLATES, CONSENT_CATEGORIES, getTemplate } from './tag-templates'
-import { Loader2 } from 'lucide-react'
+import { Loader2, ShieldOff } from 'lucide-react'
 import type { TMTag, TMTrigger, TagType } from '@/lib/types'
 
 interface TagEditorProps {
@@ -40,6 +40,7 @@ interface TagFormState {
   priority: number
   is_enabled: boolean
   trigger_ids: string[]
+  exception_trigger_ids: string[]
 }
 
 function getInitialState(tag?: TMTag): TagFormState {
@@ -56,6 +57,7 @@ function getInitialState(tag?: TMTag): TagFormState {
       priority: tag.priority,
       is_enabled: tag.is_enabled,
       trigger_ids: [...tag.trigger_ids],
+      exception_trigger_ids: [...tag.exception_trigger_ids],
     }
   }
   return {
@@ -66,6 +68,7 @@ function getInitialState(tag?: TMTag): TagFormState {
     priority: 0,
     is_enabled: true,
     trigger_ids: [],
+    exception_trigger_ids: [],
   }
 }
 
@@ -95,12 +98,29 @@ function TagEditorForm({
     }))
   }
 
-  function handleTriggerToggle(triggerId: string) {
+  function handleFiringTriggerToggle(triggerId: string) {
     setForm((prev) => {
       const ids = prev.trigger_ids.includes(triggerId)
         ? prev.trigger_ids.filter((id) => id !== triggerId)
         : [...prev.trigger_ids, triggerId]
-      return { ...prev, trigger_ids: ids }
+      // Remove from exception if adding to firing
+      const excIds = ids.includes(triggerId)
+        ? prev.exception_trigger_ids.filter((id) => id !== triggerId)
+        : prev.exception_trigger_ids
+      return { ...prev, trigger_ids: ids, exception_trigger_ids: excIds }
+    })
+  }
+
+  function handleExceptionTriggerToggle(triggerId: string) {
+    setForm((prev) => {
+      const ids = prev.exception_trigger_ids.includes(triggerId)
+        ? prev.exception_trigger_ids.filter((id) => id !== triggerId)
+        : [...prev.exception_trigger_ids, triggerId]
+      // Remove from firing if adding to exception
+      const fireIds = ids.includes(triggerId)
+        ? prev.trigger_ids.filter((id) => id !== triggerId)
+        : prev.trigger_ids
+      return { ...prev, exception_trigger_ids: ids, trigger_ids: fireIds }
     })
   }
 
@@ -116,6 +136,7 @@ function TagEditorForm({
       priority: form.priority,
       is_enabled: form.is_enabled,
       trigger_ids: form.trigger_ids,
+      exception_trigger_ids: form.exception_trigger_ids,
     }
 
     if (isEditing && tag) {
@@ -212,6 +233,9 @@ function TagEditorForm({
                 required={field.required}
               />
             )}
+            <p className="text-xs text-muted-foreground">
+              {'Use {{Variable Name}} for dynamic values'}
+            </p>
           </div>
         ))}
 
@@ -264,28 +288,60 @@ function TagEditorForm({
         </div>
 
         {triggers.length > 0 && (
-          <div className="space-y-2">
-            <Label>Triggers</Label>
-            <div className="space-y-1.5 max-h-[160px] overflow-y-auto rounded-md border p-3">
-              {triggers.map((trigger) => (
-                <label
-                  key={trigger.id}
-                  className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5"
-                >
-                  <input
-                    type="checkbox"
-                    checked={form.trigger_ids.includes(trigger.id)}
-                    onChange={() => handleTriggerToggle(trigger.id)}
-                    className="rounded border-input"
-                  />
-                  <span>{trigger.name}</span>
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {trigger.trigger_type}
-                  </span>
-                </label>
-              ))}
+          <>
+            <div className="space-y-2">
+              <Label>Firing Triggers</Label>
+              <p className="text-xs text-muted-foreground">Tag fires when any of these triggers match.</p>
+              <div className="space-y-1.5 max-h-[140px] overflow-y-auto rounded-md border p-3">
+                {triggers.map((trigger) => (
+                  <label
+                    key={trigger.id}
+                    className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.trigger_ids.includes(trigger.id)}
+                      onChange={() => handleFiringTriggerToggle(trigger.id)}
+                      className="rounded border-input"
+                    />
+                    <span>{trigger.name}</span>
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      {trigger.trigger_type}
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-          </div>
+
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1.5">
+                <ShieldOff className="h-3.5 w-3.5" />
+                Blocking (Exception) Triggers
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                If any of these triggers match, the tag is blocked even if a firing trigger matches.
+              </p>
+              <div className="space-y-1.5 max-h-[140px] overflow-y-auto rounded-md border p-3">
+                {triggers.map((trigger) => (
+                  <label
+                    key={trigger.id}
+                    className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.exception_trigger_ids.includes(trigger.id)}
+                      onChange={() => handleExceptionTriggerToggle(trigger.id)}
+                      className="rounded border-input"
+                    />
+                    <span>{trigger.name}</span>
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      {trigger.trigger_type}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </>
         )}
 
         <SheetFooter>

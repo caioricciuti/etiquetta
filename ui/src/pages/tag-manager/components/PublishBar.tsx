@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { usePublishContainer } from '@/hooks/useTagManager'
+import { usePublishContainer, usePreviewToken } from '@/hooks/useTagManager'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { VersionHistory } from './VersionHistory'
-import { Rocket, History, Loader2 } from 'lucide-react'
+import { Rocket, History, Loader2, Eye } from 'lucide-react'
 import type { TMContainer } from '@/lib/types'
 
 interface PublishBarProps {
@@ -12,6 +12,7 @@ interface PublishBarProps {
 
 export function PublishBar({ container }: PublishBarProps) {
   const publishContainer = usePublishContainer(container.id)
+  const previewToken = usePreviewToken(container.id)
   const [historyOpen, setHistoryOpen] = useState(false)
 
   const hasUnpublishedChanges = container.draft_version > container.published_version
@@ -20,6 +21,17 @@ export function PublishBar({ container }: PublishBarProps) {
   function handlePublish() {
     if (!confirm('Publish all changes? This will make the current draft live.')) return
     publishContainer.mutate()
+  }
+
+  function handlePreview() {
+    previewToken.mutate(undefined, {
+      onSuccess: (data) => {
+        const domain = data.domain || 'localhost'
+        const protocol = domain.includes('localhost') ? 'http' : 'https'
+        const url = `${protocol}://${domain}?etq_debug=${data.token}&etq_site=${data.site_id}`
+        window.open(url, '_blank')
+      },
+    })
   }
 
   return (
@@ -37,6 +49,19 @@ export function PublishBar({ container }: PublishBarProps) {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePreview}
+              disabled={previewToken.isPending}
+            >
+              {previewToken.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Eye className="h-4 w-4 mr-1.5" />
+              )}
+              Preview
+            </Button>
             <Button
               variant="outline"
               size="sm"

@@ -251,3 +251,53 @@ export function useDeleteVariable(containerId: string | undefined) {
     onError: (err) => toast.error('Failed to delete variable', { description: err.message }),
   })
 }
+
+// Container Import/Export
+export function useExportContainer(containerId: string | undefined) {
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/tagmanager/containers/${containerId}/export`, {
+        credentials: 'include',
+      })
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `container-${containerId}-export.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    },
+    onSuccess: () => toast.success('Container exported'),
+    onError: (err) => toast.error('Export failed', { description: err.message }),
+  })
+}
+
+export function useImportContainer(containerId: string | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: unknown) =>
+      fetchAPI(`/api/tagmanager/containers/${containerId}/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tm'] })
+      toast.success('Container imported successfully')
+    },
+    onError: (err) => toast.error('Import failed', { description: err.message }),
+  })
+}
+
+// Preview/Debug
+export function usePreviewToken(containerId: string | undefined) {
+  return useMutation({
+    mutationFn: () =>
+      fetchAPI<{ token: string; site_id: string; domain: string }>(
+        `/api/tagmanager/containers/${containerId}/preview-token`,
+        { method: 'POST' }
+      ),
+    onError: (err) => toast.error('Failed to generate preview', { description: err.message }),
+  })
+}

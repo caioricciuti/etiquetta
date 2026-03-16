@@ -233,6 +233,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Post("/tagmanager/containers/{id}/publish", h.PublishContainer)
 				r.Get("/tagmanager/containers/{id}/versions", h.GetContainerVersions)
 				r.Post("/tagmanager/containers/{id}/rollback/{version}", h.RollbackContainer)
+				r.Get("/tagmanager/containers/{id}/export", h.ExportContainer)
+				r.Post("/tagmanager/containers/{id}/import", h.ImportContainer)
+				r.Post("/tagmanager/containers/{id}/preview-token", h.PreviewToken)
 
 				// Tag CRUD
 				r.Get("/tagmanager/containers/{cid}/tags", h.ListTags)

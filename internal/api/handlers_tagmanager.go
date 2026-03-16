@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,7 +18,15 @@ import (
 // containerCache stores generated container JS keyed by site_id
 var containerCache sync.Map // map[string][]byte
 
-// ServeContainerScript serves the published container JS for a site
+// debugTokens stores short-lived preview tokens: token → {containerID, expiresAt}
+var debugTokens sync.Map
+
+type debugTokenEntry struct {
+	containerID string
+	expiresAt   time.Time
+}
+
+// ServeContainerScript serves the published (or debug draft) container JS for a site
 func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) {
 	siteID := chi.URLParam(r, "siteId")
 	if siteID == "" {
@@ -24,6 +35,20 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Write([]byte("/* etiquetta: container not available */"))
 		return
+	}
+
+	// Debug/Preview mode: ?debug=<token>
+	debugToken := r.URL.Query().Get("debug")
+	if debugToken != "" {
+		if entry, ok := debugTokens.Load(debugToken); ok {
+			de := entry.(debugTokenEntry)
+			if time.Now().Before(de.expiresAt) {
+				h.serveDebugContainer(w, de.containerID, siteID)
+				return
+			}
+			debugTokens.Delete(debugToken)
+		}
+		// Invalid/expired token — fall through to normal
 	}
 
 	// Check cache first
@@ -73,7 +98,7 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	js := generateContainerJS(snapshotJSON)
+	js := generateContainerJS(snapshotJSON, false)
 	jsBytes := []byte(js)
 
 	// Cache it
@@ -83,6 +108,64 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/javascript")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	w.Write(jsBytes)
+}
+
+// serveDebugContainer builds and serves the draft container with debug overlay
+func (h *Handlers) serveDebugContainer(w http.ResponseWriter, containerID, siteID string) {
+	snapshot, err := buildContainerSnapshot(h, containerID)
+	if err != nil {
+		log.Printf("[tm] serveDebugContainer: snapshot build failed: %v", err)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Write([]byte("/* etiquetta: debug container error */"))
+		return
+	}
+	snapshotJSON, _ := json.Marshal(snapshot)
+	js := generateContainerJS(string(snapshotJSON), true)
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Write([]byte(js))
+}
+
+// PreviewToken generates a short-lived debug token for preview mode
+func (h *Handlers) PreviewToken(w http.ResponseWriter, r *http.Request) {
+	containerID := chi.URLParam(r, "id")
+
+	// Verify container exists
+	var domainID string
+	err := h.db.Conn().QueryRow("SELECT domain_id FROM tm_containers WHERE id = ?", containerID).Scan(&domainID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	// Get site_id for the container's domain
+	var siteID string
+	err = h.db.Conn().QueryRow("SELECT site_id FROM domains WHERE id = ?", domainID).Scan(&siteID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Domain not found")
+		return
+	}
+
+	// Get domain URL
+	var domain string
+	h.db.Conn().QueryRow("SELECT domain FROM domains WHERE id = ?", domainID).Scan(&domain)
+
+	// Generate token: HMAC-SHA256 of containerID + timestamp
+	mac := hmac.New(sha256.New, []byte(h.cfg.SecretKey))
+	mac.Write([]byte(containerID + time.Now().String()))
+	token := hex.EncodeToString(mac.Sum(nil))[:32]
+
+	// Store with 30 min expiry
+	debugTokens.Store(token, debugTokenEntry{
+		containerID: containerID,
+		expiresAt:   time.Now().Add(30 * time.Minute),
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":   token,
+		"site_id": siteID,
+		"domain":  domain,
+	})
 }
 
 // ListContainers returns all tag manager containers with domain info
@@ -428,6 +511,192 @@ func (h *Handlers) RollbackContainer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ========== Container Import/Export ==========
+
+// ExportContainer returns the full container state as a JSON download
+func (h *Handlers) ExportContainer(w http.ResponseWriter, r *http.Request) {
+	containerID := chi.URLParam(r, "id")
+
+	// Get container metadata
+	var name, domainID string
+	var publishedVersion, draftVersion int
+	err := h.db.Conn().QueryRow(`
+		SELECT name, domain_id, published_version, draft_version FROM tm_containers WHERE id = ?
+	`, containerID).Scan(&name, &domainID, &publishedVersion, &draftVersion)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	// Build full snapshot of current draft state
+	snapshot, err := buildContainerSnapshot(h, containerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to build export")
+		return
+	}
+
+	export := map[string]interface{}{
+		"format":      "etiquetta_container_v1",
+		"exported_at": time.Now().UnixMilli(),
+		"container": map[string]interface{}{
+			"name":              name,
+			"published_version": publishedVersion,
+			"draft_version":     draftVersion,
+		},
+		"data": snapshot,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.json"`, name))
+	json.NewEncoder(w).Encode(export)
+}
+
+// ImportContainer replaces the container's draft with imported data
+func (h *Handlers) ImportContainer(w http.ResponseWriter, r *http.Request) {
+	containerID := chi.URLParam(r, "id")
+
+	// Verify container exists
+	var existingID string
+	err := h.db.Conn().QueryRow("SELECT id FROM tm_containers WHERE id = ?", containerID).Scan(&existingID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	// Parse the import payload
+	var importData struct {
+		Format string `json:"format"`
+		Data   struct {
+			Tags      []json.RawMessage `json:"tags"`
+			Triggers  []json.RawMessage `json:"triggers"`
+			Variables []json.RawMessage `json:"variables"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&importData); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+	if importData.Format != "etiquetta_container_v1" {
+		writeError(w, http.StatusBadRequest, "Unsupported import format. Expected etiquetta_container_v1")
+		return
+	}
+
+	now := time.Now().UnixMilli()
+
+	tx, err := h.db.Conn().Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	defer tx.Rollback()
+
+	// Delete existing entities
+	tx.Exec("DELETE FROM tm_tag_triggers WHERE tag_id IN (SELECT id FROM tm_tags WHERE container_id = ?)", containerID)
+	tx.Exec("DELETE FROM tm_tags WHERE container_id = ?", containerID)
+	tx.Exec("DELETE FROM tm_triggers WHERE container_id = ?", containerID)
+	tx.Exec("DELETE FROM tm_variables WHERE container_id = ?", containerID)
+
+	// ID remapping: old ID → new ID
+	idMap := make(map[string]string)
+
+	// Import triggers first (tags reference them)
+	for _, raw := range importData.Data.Triggers {
+		var t struct {
+			ID          string          `json:"id"`
+			Name        string          `json:"name"`
+			TriggerType string          `json:"trigger_type"`
+			Config      json.RawMessage `json:"config"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		newID := generateID()
+		idMap[t.ID] = newID
+		configStr := "{}"
+		if t.Config != nil {
+			configStr = string(t.Config)
+		}
+		tx.Exec(`INSERT INTO tm_triggers (id, container_id, name, trigger_type, config, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, newID, containerID, t.Name, t.TriggerType, configStr, now, now)
+	}
+
+	// Import variables
+	for _, raw := range importData.Data.Variables {
+		var v struct {
+			ID           string          `json:"id"`
+			Name         string          `json:"name"`
+			VariableType string          `json:"variable_type"`
+			Config       json.RawMessage `json:"config"`
+		}
+		if json.Unmarshal(raw, &v) != nil {
+			continue
+		}
+		newID := generateID()
+		configStr := "{}"
+		if v.Config != nil {
+			configStr = string(v.Config)
+		}
+		tx.Exec(`INSERT INTO tm_variables (id, container_id, name, variable_type, config, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, newID, containerID, v.Name, v.VariableType, configStr, now, now)
+	}
+
+	// Import tags with trigger associations
+	for _, raw := range importData.Data.Tags {
+		var t struct {
+			ID                  string          `json:"id"`
+			Name                string          `json:"name"`
+			TagType             string          `json:"tag_type"`
+			Config              json.RawMessage `json:"config"`
+			ConsentCategory     string          `json:"consent_category"`
+			Priority            int             `json:"priority"`
+			TriggerIDs          []string        `json:"trigger_ids"`
+			ExceptionTriggerIDs []string        `json:"exception_trigger_ids"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			continue
+		}
+		newTagID := generateID()
+		configStr := "{}"
+		if t.Config != nil {
+			configStr = string(t.Config)
+		}
+		if t.ConsentCategory == "" {
+			t.ConsentCategory = "marketing"
+		}
+		tx.Exec(`INSERT INTO tm_tags (id, container_id, name, tag_type, config, consent_category, priority, is_enabled, version, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, newTagID, containerID, t.Name, t.TagType, configStr, t.ConsentCategory, t.Priority, now, now)
+
+		// Firing triggers
+		for _, oldTriggerID := range t.TriggerIDs {
+			if newTriggerID, ok := idMap[oldTriggerID]; ok {
+				tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 0)", newTagID, newTriggerID)
+			}
+		}
+		// Exception triggers
+		for _, oldTriggerID := range t.ExceptionTriggerIDs {
+			if newTriggerID, ok := idMap[oldTriggerID]; ok {
+				tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 1)", newTagID, newTriggerID)
+			}
+		}
+	}
+
+	// Bump draft version
+	tx.Exec("UPDATE tm_containers SET draft_version = draft_version + 1, updated_at = ? WHERE id = ?", now, containerID)
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Import failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"imported": map[string]int{
+			"tags":      len(importData.Data.Tags),
+			"triggers":  len(importData.Data.Triggers),
+			"variables": len(importData.Data.Variables),
+		},
+	})
+}
+
 // ========== Tag CRUD ==========
 
 // ListTags lists all tags for a container, including trigger associations
@@ -461,27 +730,32 @@ func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 
 	// Batch-fetch all trigger associations for this container
-	triggerMap := getContainerTagTriggerIDs(h, containerID)
+	triggerMaps := getContainerTagTriggerMaps(h, containerID)
 
 	tags := make([]map[string]interface{}, 0, len(tagRows))
 	for _, t := range tagRows {
-		triggerIDs := triggerMap[t.id]
-		if triggerIDs == nil {
-			triggerIDs = []string{}
+		firingIDs := triggerMaps.firing[t.id]
+		if firingIDs == nil {
+			firingIDs = []string{}
+		}
+		exceptionIDs := triggerMaps.exception[t.id]
+		if exceptionIDs == nil {
+			exceptionIDs = []string{}
 		}
 		tags = append(tags, map[string]interface{}{
-			"id":               t.id,
-			"container_id":     t.cID,
-			"name":             t.name,
-			"tag_type":         t.tagType,
-			"config":           json.RawMessage(t.config),
-			"consent_category": t.consentCat,
-			"priority":         t.priority,
-			"is_enabled":       t.isEnabled,
-			"version":          t.version,
-			"trigger_ids":      triggerIDs,
-			"created_at":       t.createdAt,
-			"updated_at":       t.updatedAt,
+			"id":                    t.id,
+			"container_id":          t.cID,
+			"name":                  t.name,
+			"tag_type":              t.tagType,
+			"config":                json.RawMessage(t.config),
+			"consent_category":      t.consentCat,
+			"priority":              t.priority,
+			"is_enabled":            t.isEnabled,
+			"version":               t.version,
+			"trigger_ids":           firingIDs,
+			"exception_trigger_ids": exceptionIDs,
+			"created_at":            t.createdAt,
+			"updated_at":            t.updatedAt,
 		})
 	}
 
@@ -493,12 +767,13 @@ func (h *Handlers) CreateTag(w http.ResponseWriter, r *http.Request) {
 	containerID := chi.URLParam(r, "cid")
 
 	var req struct {
-		Name            string          `json:"name"`
-		TagType         string          `json:"tag_type"`
-		Config          json.RawMessage `json:"config"`
-		ConsentCategory string          `json:"consent_category"`
-		Priority        int             `json:"priority"`
-		TriggerIDs      []string        `json:"trigger_ids"`
+		Name                string          `json:"name"`
+		TagType             string          `json:"tag_type"`
+		Config              json.RawMessage `json:"config"`
+		ConsentCategory     string          `json:"consent_category"`
+		Priority            int             `json:"priority"`
+		TriggerIDs          []string        `json:"trigger_ids"`
+		ExceptionTriggerIDs []string        `json:"exception_trigger_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON")
@@ -534,11 +809,20 @@ func (h *Handlers) CreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert trigger associations
+	// Insert firing trigger associations
 	for _, triggerID := range req.TriggerIDs {
 		_, err = tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 0)", id, triggerID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to associate triggers")
+			return
+		}
+	}
+
+	// Insert exception trigger associations
+	for _, triggerID := range req.ExceptionTriggerIDs {
+		_, err = tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 1)", id, triggerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to associate exception triggers")
 			return
 		}
 	}
@@ -549,18 +833,19 @@ func (h *Handlers) CreateTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"id":               id,
-		"container_id":     containerID,
-		"name":             req.Name,
-		"tag_type":         req.TagType,
-		"config":           req.Config,
-		"consent_category": req.ConsentCategory,
-		"priority":         req.Priority,
-		"is_enabled":       true,
-		"version":          1,
-		"trigger_ids":      req.TriggerIDs,
-		"created_at":       now,
-		"updated_at":       now,
+		"id":                    id,
+		"container_id":          containerID,
+		"name":                  req.Name,
+		"tag_type":              req.TagType,
+		"config":                req.Config,
+		"consent_category":      req.ConsentCategory,
+		"priority":              req.Priority,
+		"is_enabled":            true,
+		"version":               1,
+		"trigger_ids":           req.TriggerIDs,
+		"exception_trigger_ids": req.ExceptionTriggerIDs,
+		"created_at":            now,
+		"updated_at":            now,
 	})
 }
 
@@ -583,21 +868,22 @@ func (h *Handlers) GetTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	triggerIDs := getTagTriggerIDs(h, id)
+	firingIDs, exceptionIDs := getTagTriggerIDsSplit(h, id)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":               id,
-		"container_id":     cID,
-		"name":             name,
-		"tag_type":         tagType,
-		"config":           json.RawMessage(config),
-		"consent_category": consentCat,
-		"priority":         priority,
-		"is_enabled":       isEnabled,
-		"version":          version,
-		"trigger_ids":      triggerIDs,
-		"created_at":       createdAt,
-		"updated_at":       updatedAt,
+		"id":                    id,
+		"container_id":          cID,
+		"name":                  name,
+		"tag_type":              tagType,
+		"config":                json.RawMessage(config),
+		"consent_category":      consentCat,
+		"priority":              priority,
+		"is_enabled":            isEnabled,
+		"version":               version,
+		"trigger_ids":           firingIDs,
+		"exception_trigger_ids": exceptionIDs,
+		"created_at":            createdAt,
+		"updated_at":            updatedAt,
 	})
 }
 
@@ -606,13 +892,14 @@ func (h *Handlers) UpdateTag(w http.ResponseWriter, r *http.Request) {
 	tagID := chi.URLParam(r, "id")
 
 	var req struct {
-		Name            string          `json:"name"`
-		TagType         string          `json:"tag_type"`
-		Config          json.RawMessage `json:"config"`
-		ConsentCategory string          `json:"consent_category"`
-		Priority        int             `json:"priority"`
-		IsEnabled       *bool           `json:"is_enabled"`
-		TriggerIDs      []string        `json:"trigger_ids"`
+		Name                string          `json:"name"`
+		TagType             string          `json:"tag_type"`
+		Config              json.RawMessage `json:"config"`
+		ConsentCategory     string          `json:"consent_category"`
+		Priority            int             `json:"priority"`
+		IsEnabled           *bool           `json:"is_enabled"`
+		TriggerIDs          []string        `json:"trigger_ids"`
+		ExceptionTriggerIDs []string        `json:"exception_trigger_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON")
@@ -651,10 +938,13 @@ func (h *Handlers) UpdateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replace trigger associations
+	// Replace all trigger associations (firing + exception)
 	tx.Exec("DELETE FROM tm_tag_triggers WHERE tag_id = ?", tagID)
 	for _, triggerID := range req.TriggerIDs {
 		tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 0)", tagID, triggerID)
+	}
+	for _, triggerID := range req.ExceptionTriggerIDs {
+		tx.Exec("INSERT INTO tm_tag_triggers (tag_id, trigger_id, is_exception) VALUES (?, ?, 1)", tagID, triggerID)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -964,50 +1254,70 @@ func (h *Handlers) DeleteVariable(w http.ResponseWriter, r *http.Request) {
 
 // ========== Helpers ==========
 
-// getContainerTagTriggerIDs batch-fetches all tag→trigger associations for a container.
-// Returns a map of tagID → []triggerID. Safe to call without an open rows cursor.
-func getContainerTagTriggerIDs(h *Handlers, containerID string) map[string][]string {
+// tagTriggerMaps holds firing and exception trigger IDs per tag
+type tagTriggerMaps struct {
+	firing    map[string][]string
+	exception map[string][]string
+}
+
+// getContainerTagTriggerMaps batch-fetches all tag→trigger associations for a container,
+// split into firing and exception maps.
+func getContainerTagTriggerMaps(h *Handlers, containerID string) tagTriggerMaps {
 	rows, err := h.db.Conn().Query(`
-		SELECT tt.tag_id, tt.trigger_id
+		SELECT tt.tag_id, tt.trigger_id, tt.is_exception
 		FROM tm_tag_triggers tt
 		JOIN tm_tags t ON t.id = tt.tag_id
 		WHERE t.container_id = ?
 	`, containerID)
 	if err != nil {
-		return map[string][]string{}
+		return tagTriggerMaps{firing: map[string][]string{}, exception: map[string][]string{}}
 	}
 	defer rows.Close()
 
-	m := make(map[string][]string)
+	m := tagTriggerMaps{
+		firing:    make(map[string][]string),
+		exception: make(map[string][]string),
+	}
 	for rows.Next() {
 		var tagID, triggerID string
-		if rows.Scan(&tagID, &triggerID) == nil {
-			m[tagID] = append(m[tagID], triggerID)
+		var isException bool
+		if rows.Scan(&tagID, &triggerID, &isException) == nil {
+			if isException {
+				m.exception[tagID] = append(m.exception[tagID], triggerID)
+			} else {
+				m.firing[tagID] = append(m.firing[tagID], triggerID)
+			}
 		}
 	}
 	return m
 }
 
-// getTagTriggerIDs returns trigger IDs associated with a single tag.
-// Only safe when no rows cursor is open (e.g. after QueryRow).
-func getTagTriggerIDs(h *Handlers, tagID string) []string {
-	rows, err := h.db.Conn().Query("SELECT trigger_id FROM tm_tag_triggers WHERE tag_id = ?", tagID)
+// getTagTriggerIDsSplit returns firing and exception trigger IDs for a single tag.
+func getTagTriggerIDsSplit(h *Handlers, tagID string) (firing []string, exception []string) {
+	rows, err := h.db.Conn().Query("SELECT trigger_id, is_exception FROM tm_tag_triggers WHERE tag_id = ?", tagID)
 	if err != nil {
-		return []string{}
+		return []string{}, []string{}
 	}
 	defer rows.Close()
 
-	var ids []string
 	for rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
+		var isExc bool
+		if rows.Scan(&id, &isExc) == nil {
+			if isExc {
+				exception = append(exception, id)
+			} else {
+				firing = append(firing, id)
+			}
 		}
 	}
-	if ids == nil {
-		ids = []string{}
+	if firing == nil {
+		firing = []string{}
 	}
-	return ids
+	if exception == nil {
+		exception = []string{}
+	}
+	return
 }
 
 // buildContainerSnapshot builds a full snapshot of the container state
@@ -1036,23 +1346,28 @@ func buildContainerSnapshot(h *Handlers, containerID string) (map[string]interfa
 	}
 	tagRows.Close()
 
-	// Batch-fetch trigger associations
-	triggerMap := getContainerTagTriggerIDs(h, containerID)
+	// Batch-fetch trigger associations (split firing/exception)
+	triggerMaps := getContainerTagTriggerMaps(h, containerID)
 
 	tags := make([]map[string]interface{}, 0, len(rawTags))
 	for _, t := range rawTags {
-		triggerIDs := triggerMap[t.id]
-		if triggerIDs == nil {
-			triggerIDs = []string{}
+		firingIDs := triggerMaps.firing[t.id]
+		if firingIDs == nil {
+			firingIDs = []string{}
+		}
+		exceptionIDs := triggerMaps.exception[t.id]
+		if exceptionIDs == nil {
+			exceptionIDs = []string{}
 		}
 		tags = append(tags, map[string]interface{}{
-			"id":               t.id,
-			"name":             t.name,
-			"tag_type":         t.tagType,
-			"config":           json.RawMessage(t.config),
-			"consent_category": t.consentCat,
-			"priority":         t.priority,
-			"trigger_ids":      triggerIDs,
+			"id":                    t.id,
+			"name":                  t.name,
+			"tag_type":              t.tagType,
+			"config":                json.RawMessage(t.config),
+			"consent_category":      t.consentCat,
+			"priority":              t.priority,
+			"trigger_ids":           firingIDs,
+			"exception_trigger_ids": exceptionIDs,
 		})
 	}
 
@@ -1115,13 +1430,44 @@ func buildContainerSnapshot(h *Handlers, containerID string) (map[string]interfa
 	}, nil
 }
 
-// generateContainerJS creates a self-executing JS string from a snapshot JSON
-func generateContainerJS(snapshotJSON string) string {
-	return fmt.Sprintf(`(function(){
+// generateContainerJS creates a self-executing JS string from a snapshot JSON.
+// If debug is true, it wraps the container with a debug overlay panel.
+func generateContainerJS(snapshotJSON string, debug bool) string {
+	debugPrefix := ""
+	debugSuffix := ""
+	logFn := ""
+
+	if debug {
+		logFn = `var _dbg=[];function _log(type,msg,data){_dbg.push({t:Date.now(),type:type,msg:msg,data:data});_renderPanel();}
+`
+		debugSuffix = `
+function _renderPanel(){
+var p=document.getElementById("__etq_debug");
+if(!p){p=document.createElement("div");p.id="__etq_debug";p.style.cssText="position:fixed;bottom:0;right:0;width:420px;max-height:50vh;overflow-y:auto;background:#1a1a2e;color:#e0e0e0;font:12px/1.5 monospace;z-index:2147483647;border-top:2px solid #6c63ff;border-left:2px solid #6c63ff;padding:0;";
+var hdr=document.createElement("div");hdr.style.cssText="background:#6c63ff;color:#fff;padding:6px 12px;font-weight:bold;cursor:pointer;display:flex;justify-content:space-between;";hdr.innerHTML="Etiquetta Debug <span style='font-weight:normal'>DRAFT</span>";
+var body=document.createElement("div");body.id="__etq_debug_body";body.style.cssText="padding:8px 12px;";
+hdr.onclick=function(){body.style.display=body.style.display==="none"?"block":"none";};
+p.appendChild(hdr);p.appendChild(body);document.body.appendChild(p);}
+var body=document.getElementById("__etq_debug_body");var html="";
+for(var i=_dbg.length-1;i>=0;i--){var e=_dbg[i];var color=e.type==="fire"?"#4caf50":e.type==="block"?"#f44336":e.type==="condition"?"#ff9800":"#90caf9";
+html+="<div style='border-bottom:1px solid #333;padding:4px 0;'><span style='color:"+color+";font-weight:bold;'>["+e.type.toUpperCase()+"]</span> "+e.msg;
+if(e.data){html+=" <span style='color:#999;'>"+JSON.stringify(e.data)+"</span>";}html+="</div>";}
+body.innerHTML=html||"<div style='color:#999;'>Waiting for events...</div>";
+}
+`
+		debugPrefix = "/* ETIQUETTA DEBUG/PREVIEW MODE */\n"
+	}
+
+	// The core JS with features:
+	// - Exception triggers (tag.exception_trigger_ids)
+	// - Trigger conditions (trigger.config.conditions with operators)
+	// - Variable interpolation ({{Variable Name}} in tag configs)
+	// - Debug logging (when debug=true)
+	return fmt.Sprintf(`%s(function(){
 "use strict";
 var C=%s;
 var _cl=[];
-window.etiquettaDataLayer=window.etiquettaDataLayer||[];
+%swindow.etiquettaDataLayer=window.etiquettaDataLayer||[];
 var consent=window.__ETIQUETTA_CONSENT__||null;
 function hasConsent(cat){return !consent||(consent[cat]===true);}
 function resolveVar(v){
@@ -1138,49 +1484,134 @@ case"page_path":return location.pathname;
 case"page_hostname":return location.hostname;
 default:return"";}
 }
+function resolveCondVar(name){
+var v=C.variables.find(function(v){return v.name===name;});
+if(v)return String(resolveVar(v));
+switch(name){
+case"page_path":return location.pathname;
+case"page_url":return location.href;
+case"page_hostname":return location.hostname;
+case"referrer":return document.referrer;
+default:return"";}
+}
+function evalOp(val,op,expected){
+val=String(val||"");expected=String(expected||"");
+switch(op){
+case"equals":return val===expected;
+case"not_equals":return val!==expected;
+case"contains":return val.indexOf(expected)>=0;
+case"not_contains":return val.indexOf(expected)<0;
+case"starts_with":return val.indexOf(expected)===0;
+case"ends_with":return val.length>=expected.length&&val.slice(-expected.length)===expected;
+case"matches_regex":try{return new RegExp(expected).test(val);}catch(e){return false;}
+default:return true;}
+}
+function interpolate(str){
+if(typeof str!=="string")return str;
+return str.replace(/\{\{(.+?)\}\}/g,function(m,name){
+name=name.trim();
+var v=C.variables.find(function(v){return v.name===name;});
+return v?String(resolveVar(v)):m;
+});
+}
+function interpolateConfig(cfg){
+var r={};for(var k in cfg){if(cfg.hasOwnProperty(k)){r[k]=interpolate(cfg[k]);}}return r;
+}
 function loadScript(src,cb){var s=document.createElement("script");s.src=src;s.async=true;if(cb)s.onload=cb;document.head.appendChild(s);}
 function fireTag(tag){
-if(!hasConsent(tag.consent_category))return;
+if(!hasConsent(tag.consent_category)){%sreturn;}
+var cfg=interpolateConfig(tag.config);%s
 switch(tag.tag_type){
-case"custom_html":var d=document.createElement("div");d.innerHTML=tag.config.html||"";var scripts=d.getElementsByTagName("script");for(var i=0;i<scripts.length;i++){var s=document.createElement("script");if(scripts[i].src){s.src=scripts[i].src;}else{s.textContent=scripts[i].textContent;}document.head.appendChild(s);}break;
-case"ga4":if(!window.gtag){window.dataLayer=window.dataLayer||[];window.gtag=function(){window.dataLayer.push(arguments);};window.gtag("js",new Date());loadScript("https://www.googletagmanager.com/gtag/js?id="+tag.config.measurement_id);}window.gtag("config",tag.config.measurement_id);break;
-case"meta_pixel":if(!window.fbq){var f=function(){f.callMethod?f.callMethod.apply(f,arguments):f.queue.push(arguments);};window.fbq=f;f.push=f;f.loaded=true;f.version="2.0";f.queue=[];loadScript("https://connect.facebook.net/en_US/fbevents.js");window.fbq("init",tag.config.pixel_id);}window.fbq("track","PageView");break;
-case"google_ads":if(!window.gtag){window.dataLayer=window.dataLayer||[];window.gtag=function(){window.dataLayer.push(arguments);};window.gtag("js",new Date());loadScript("https://www.googletagmanager.com/gtag/js?id="+tag.config.conversion_id);}window.gtag("config",tag.config.conversion_id);if(tag.config.conversion_label){window.gtag("event","conversion",{send_to:tag.config.conversion_id+"/"+tag.config.conversion_label});}break;
-case"linkedin":if(!window._linkedin_partner_id){window._linkedin_partner_id=tag.config.partner_id;window._linkedin_data_partner_ids=window._linkedin_data_partner_ids||[];window._linkedin_data_partner_ids.push(tag.config.partner_id);loadScript("https://snap.licdn.com/li.lms-analytics/insight.min.js");}break;
-case"tiktok":if(!window.ttq){var tt=function(){tt.methods.forEach(function(m){tt[m]=function(){var a=Array.prototype.slice.call(arguments);a.unshift(m);tt.queue.push(a);};});};tt.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];tt.queue=[];tt();window.ttq=tt;loadScript("https://analytics.tiktok.com/i18n/pixel/events.js");window.ttq.load(tag.config.pixel_id);window.ttq.page();}break;
+case"custom_html":var d=document.createElement("div");d.innerHTML=cfg.html||"";var scripts=d.getElementsByTagName("script");for(var i=0;i<scripts.length;i++){var s=document.createElement("script");if(scripts[i].src){s.src=scripts[i].src;}else{s.textContent=scripts[i].textContent;}document.head.appendChild(s);}break;
+case"ga4":if(!window.gtag){window.dataLayer=window.dataLayer||[];window.gtag=function(){window.dataLayer.push(arguments);};window.gtag("js",new Date());loadScript("https://www.googletagmanager.com/gtag/js?id="+cfg.measurement_id);}window.gtag("config",cfg.measurement_id);break;
+case"meta_pixel":if(!window.fbq){var f=function(){f.callMethod?f.callMethod.apply(f,arguments):f.queue.push(arguments);};window.fbq=f;f.push=f;f.loaded=true;f.version="2.0";f.queue=[];loadScript("https://connect.facebook.net/en_US/fbevents.js");window.fbq("init",cfg.pixel_id);}window.fbq("track","PageView");break;
+case"google_ads":if(!window.gtag){window.dataLayer=window.dataLayer||[];window.gtag=function(){window.dataLayer.push(arguments);};window.gtag("js",new Date());loadScript("https://www.googletagmanager.com/gtag/js?id="+cfg.conversion_id);}window.gtag("config",cfg.conversion_id);if(cfg.conversion_label){window.gtag("event","conversion",{send_to:cfg.conversion_id+"/"+cfg.conversion_label});}break;
+case"linkedin":if(!window._linkedin_partner_id){window._linkedin_partner_id=cfg.partner_id;window._linkedin_data_partner_ids=window._linkedin_data_partner_ids||[];window._linkedin_data_partner_ids.push(cfg.partner_id);loadScript("https://snap.licdn.com/li.lms-analytics/insight.min.js");}break;
+case"tiktok":if(!window.ttq){var tt=function(){tt.methods.forEach(function(m){tt[m]=function(){var a=Array.prototype.slice.call(arguments);a.unshift(m);tt.queue.push(a);};});};tt.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];tt.queue=[];tt();window.ttq=tt;loadScript("https://analytics.tiktok.com/i18n/pixel/events.js");window.ttq.load(cfg.pixel_id);window.ttq.page();}break;
+case"etiquetta_event":if(window.etiquetta&&window.etiquetta.track){var props={};try{props=JSON.parse(cfg.event_props||"{}");}catch(e){}window.etiquetta.track(cfg.event_name||"event",props);}break;
 }
 }
 function evalTrigger(trigger,evType,evData){
 var t=trigger.trigger_type,cfg=trigger.config||{};
-if(t==="page_load"||t==="dom_ready")return true;
-if(t==="click_all"&&evType==="click")return true;
-if(t==="click_specific"&&evType==="click"){if(!cfg.selector)return false;return evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
-if(t==="custom_event"&&evType==="custom_event"&&evData===cfg.event_name)return true;
-if(t==="scroll_depth"&&evType==="scroll_depth")return true;
-if(t==="timer"&&evType==="timer")return true;
-if(t==="history_change"&&evType==="history_change")return true;
-if(t==="form_submit"&&evType==="form_submit"){if(!cfg.selector)return true;return evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
-return false;
+var baseMatch=false;
+if(t==="page_load"||t==="dom_ready")baseMatch=!evType||evType===t;
+else if(t==="click_all"&&evType==="click")baseMatch=true;
+else if(t==="click_specific"&&evType==="click"){if(!cfg.selector)baseMatch=false;else baseMatch=evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
+else if(t==="custom_event"&&evType==="custom_event"&&evData===cfg.event_name)baseMatch=true;
+else if(t==="scroll_depth"&&evType==="scroll_depth")baseMatch=true;
+else if(t==="timer"&&evType==="timer")baseMatch=true;
+else if(t==="history_change"&&evType==="history_change")baseMatch=true;
+else if(t==="form_submit"&&evType==="form_submit"){if(!cfg.selector)baseMatch=true;else baseMatch=evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
+else if(!evType&&(t==="page_load"||t==="dom_ready"))baseMatch=true;
+if(!baseMatch)return false;
+var conditions=cfg.conditions;
+if(!conditions||!conditions.length)return true;
+return conditions.every(function(cond){
+var val=resolveCondVar(cond.variable);
+var result=evalOp(val,cond.operator,cond.value);%s
+return result;
+});
 }
 function init(){
 _cl.forEach(function(fn){fn();});_cl=[];
 C.tags.sort(function(a,b){return(b.priority||0)-(a.priority||0);});
 C.tags.forEach(function(tag){
-var triggers=tag.trigger_ids.map(function(tid){return C.triggers.find(function(t){return t.id===tid;});}).filter(Boolean);
-var immediate=triggers.length===0||triggers.some(function(tr){return evalTrigger(tr);});
-if(immediate)fireTag(tag);
-triggers.forEach(function(tr){
+var firingTriggers=tag.trigger_ids.map(function(tid){return C.triggers.find(function(t){return t.id===tid;});}).filter(Boolean);
+var exceptionTriggers=(tag.exception_trigger_ids||[]).map(function(tid){return C.triggers.find(function(t){return t.id===tid;});}).filter(Boolean);
+function isBlocked(evType,evData){
+for(var i=0;i<exceptionTriggers.length;i++){if(evalTrigger(exceptionTriggers[i],evType,evData)){%sreturn true;}}
+return false;
+}
+var immediate=firingTriggers.length===0||firingTriggers.some(function(tr){return evalTrigger(tr);});
+if(immediate&&!isBlocked()){%sfireTag(tag);}
+firingTriggers.forEach(function(tr){
 var t=tr.trigger_type,cfg=tr.config||{};
-if(t==="click_all"||t==="click_specific"){var h=function(e){if(evalTrigger(tr,"click",{target:e.target}))fireTag(tag);};document.addEventListener("click",h);_cl.push(function(){document.removeEventListener("click",h);});}
-if(t==="custom_event"&&cfg.event_name){var ce=function(){fireTag(tag);};window.addEventListener(cfg.event_name,ce);_cl.push(function(){window.removeEventListener(cfg.event_name,ce);});}
-if(t==="scroll_depth"){var pct=parseInt(cfg.percentage,10)||50;var fired=false;var sh=function(){if(fired)return;var scrollTop=window.pageYOffset||document.documentElement.scrollTop;var docHeight=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)-window.innerHeight;if(docHeight>0&&(scrollTop/docHeight)*100>=pct){fired=true;fireTag(tag);}};window.addEventListener("scroll",sh,{passive:true});_cl.push(function(){window.removeEventListener("scroll",sh);});}
-if(t==="timer"){var interval=parseInt(cfg.interval_ms,10)||5000;var limit=parseInt(cfg.limit,10)||0;var count=0;var tid=setInterval(function(){count++;fireTag(tag);if(limit>0&&count>=limit)clearInterval(tid);},interval);_cl.push(function(){clearInterval(tid);});}
-if(t==="history_change"){var hp=function(){fireTag(tag);};window.addEventListener("popstate",hp);var origPush=history.pushState;var origReplace=history.replaceState;history.pushState=function(){origPush.apply(history,arguments);hp();};history.replaceState=function(){origReplace.apply(history,arguments);hp();};_cl.push(function(){window.removeEventListener("popstate",hp);history.pushState=origPush;history.replaceState=origReplace;});}
-if(t==="form_submit"){var fh=function(e){if(evalTrigger(tr,"form_submit",{target:e.target}))fireTag(tag);};document.addEventListener("submit",fh);_cl.push(function(){document.removeEventListener("submit",fh);});}
+if(t==="click_all"||t==="click_specific"){var h=function(e){if(evalTrigger(tr,"click",{target:e.target})&&!isBlocked("click",{target:e.target})){%sfireTag(tag);}};document.addEventListener("click",h);_cl.push(function(){document.removeEventListener("click",h);});}
+if(t==="custom_event"&&cfg.event_name){var ce=function(){if(!isBlocked("custom_event",cfg.event_name)){%sfireTag(tag);}};window.addEventListener(cfg.event_name,ce);_cl.push(function(){window.removeEventListener(cfg.event_name,ce);});}
+if(t==="scroll_depth"){var pct=parseInt(cfg.percentage,10)||50;var fired=false;var sh=function(){if(fired)return;var scrollTop=window.pageYOffset||document.documentElement.scrollTop;var docHeight=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)-window.innerHeight;if(docHeight>0&&(scrollTop/docHeight)*100>=pct){fired=true;if(!isBlocked("scroll_depth")){%sfireTag(tag);}}};window.addEventListener("scroll",sh,{passive:true});_cl.push(function(){window.removeEventListener("scroll",sh);});}
+if(t==="timer"){var interval=parseInt(cfg.interval_ms,10)||5000;var limit=parseInt(cfg.limit,10)||0;var count=0;var tid=setInterval(function(){count++;if(!isBlocked("timer")){%sfireTag(tag);}if(limit>0&&count>=limit)clearInterval(tid);},interval);_cl.push(function(){clearInterval(tid);});}
+if(t==="history_change"){var hp=function(){if(!isBlocked("history_change")){%sfireTag(tag);}};window.addEventListener("popstate",hp);var origPush=history.pushState;var origReplace=history.replaceState;history.pushState=function(){origPush.apply(history,arguments);hp();};history.replaceState=function(){origReplace.apply(history,arguments);hp();};_cl.push(function(){window.removeEventListener("popstate",hp);history.pushState=origPush;history.replaceState=origReplace;});}
+if(t==="form_submit"){var fh=function(e){if(evalTrigger(tr,"form_submit",{target:e.target})&&!isBlocked("form_submit",{target:e.target})){%sfireTag(tag);}};document.addEventListener("submit",fh);_cl.push(function(){document.removeEventListener("submit",fh);});}
 });
 });
 }
 window.addEventListener("etiquetta:consent",function(){consent=window.__ETIQUETTA_CONSENT__;init();});
 if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{init();}
-})();`, snapshotJSON)
+%s})();`,
+		debugPrefix,
+		snapshotJSON,
+		logFn,
+		// fireTag consent block log
+		dbgLog(debug, `_log("block","Tag blocked by consent: "+tag.name,{category:tag.consent_category});`),
+		// fireTag fired log
+		dbgLog(debug, `_log("fire","Tag fired: "+tag.name,{type:tag.tag_type});`),
+		// condition eval log
+		dbgLog(debug, `_log("condition","Condition: "+cond.variable+" "+cond.operator+" "+cond.value+" = "+result,{actual:val});`),
+		// exception blocked log
+		dbgLog(debug, `_log("block","Exception trigger blocked tag: "+tag.name,{trigger:exceptionTriggers[i].name});`),
+		// immediate fire log
+		dbgLog(debug, `_log("fire","Immediate fire: "+tag.name,{triggers:firingTriggers.length,exceptions:exceptionTriggers.length});`),
+		// click fire log
+		dbgLog(debug, `_log("fire","Click fire: "+tag.name);`),
+		// custom event fire log
+		dbgLog(debug, `_log("fire","Custom event fire: "+tag.name,{event:cfg.event_name});`),
+		// scroll fire log
+		dbgLog(debug, `_log("fire","Scroll depth fire: "+tag.name,{pct:pct});`),
+		// timer fire log
+		dbgLog(debug, `_log("fire","Timer fire: "+tag.name,{count:count});`),
+		// history fire log
+		dbgLog(debug, `_log("fire","History change fire: "+tag.name);`),
+		// form fire log
+		dbgLog(debug, `_log("fire","Form submit fire: "+tag.name);`),
+		// debug panel suffix
+		debugSuffix,
+	)
+}
+
+// dbgLog returns the log line if debug is true, empty string otherwise
+func dbgLog(debug bool, line string) string {
+	if debug {
+		return line
+	}
+	return ""
 }

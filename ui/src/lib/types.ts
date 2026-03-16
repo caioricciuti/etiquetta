@@ -357,7 +357,7 @@ export interface AuditLogResponse {
 }
 
 // Tag Manager types
-export type TagType = 'custom_html' | 'ga4' | 'meta_pixel' | 'google_ads' | 'linkedin' | 'tiktok'
+export type TagType = 'etiquetta_event' | 'custom_html' | 'ga4' | 'meta_pixel' | 'google_ads' | 'linkedin' | 'tiktok'
 export type TriggerType = 'page_load' | 'dom_ready' | 'click_all' | 'click_specific' | 'scroll_depth' | 'custom_event' | 'timer' | 'history_change' | 'form_submit'
 export type VariableType = 'data_layer' | 'url_param' | 'cookie' | 'dom_element' | 'js_variable' | 'constant' | 'referrer' | 'page_url' | 'page_path' | 'page_hostname'
 
@@ -385,9 +385,16 @@ export interface TMTag {
   priority: number
   is_enabled: boolean
   trigger_ids: string[]
+  exception_trigger_ids: string[]
   version: number
   created_at: number
   updated_at: number
+}
+
+export interface TriggerCondition {
+  variable: string
+  operator: 'equals' | 'not_equals' | 'contains' | 'not_contains' | 'starts_with' | 'ends_with' | 'matches_regex'
+  value: string
 }
 
 export interface TMTrigger {
