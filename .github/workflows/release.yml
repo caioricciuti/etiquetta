@@ -9,8 +9,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build-ui:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build UI
+        run: cd ui && bun install && bun run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist/
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: build-ui
     steps:
       - uses: actions/checkout@v4
 
@@ -18,20 +34,76 @@ jobs:
         with:
           go-version: '1.24'
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist/
 
-      - name: Build UI
-        run: cd ui && bun install && bun run build
+      - name: Install cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build all platforms
+      - name: Build linux-amd64
         run: |
-          mkdir -p dist
           VERSION=${{ github.ref_name }}
           LDFLAGS="-s -w -X main.Version=${VERSION}"
-          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-linux-amd64 ./cmd/etiquetta
-          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-linux-arm64 ./cmd/etiquetta
-          GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-darwin-amd64 ./cmd/etiquetta
-          GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-darwin-arm64 ./cmd/etiquetta
+          CGO_ENABLED=1 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-linux-amd64 ./cmd/etiquetta
+
+      - name: Build linux-arm64
+        run: |
+          VERSION=${{ github.ref_name }}
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-linux-arm64 ./cmd/etiquetta
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux
+          path: dist/
+
+  build-darwin:
+    runs-on: macos-latest
+    needs: build-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist/
+
+      - name: Build darwin-arm64
+        run: |
+          VERSION=${{ github.ref_name }}
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          CGO_ENABLED=1 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-darwin-arm64 ./cmd/etiquetta
+
+      - name: Build darwin-amd64
+        run: |
+          VERSION=${{ github.ref_name }}
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          CGO_ENABLED=1 GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/etiquetta-darwin-amd64 ./cmd/etiquetta
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-darwin
+          path: dist/
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-darwin]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-darwin
+          path: dist/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
