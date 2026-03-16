@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useContainers, useCreateContainer } from '@/hooks/useTagManager'
-import { useDomains } from '@/hooks/useDomains'
+import { useSelectedDomain } from '@/hooks/useSelectedDomain'
 import { FeatureGate } from '@/components/FeatureGate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -93,7 +93,7 @@ function ContainerCard({
 function TagManagerContent() {
   const navigate = useNavigate()
   const { data: containers, isLoading: containersLoading } = useContainers()
-  const { data: domains, isLoading: domainsLoading } = useDomains()
+  const { selectedDomain, domains, isLoading: domainsLoading } = useSelectedDomain()
   const createContainer = useCreateContainer()
 
   const isLoading = containersLoading || domainsLoading
@@ -107,10 +107,9 @@ function TagManagerContent() {
   }
 
   function handleCreate(domainId: string) {
-    const domain = domains?.find((d) => d.id === domainId)
-    if (!domain) return
+    if (!selectedDomain) return
     createContainer.mutate(
-      { domain_id: domainId, name: `${domain.name} Container` },
+      { domain_id: domainId, name: `${selectedDomain.name} Container` },
       {
         onSuccess: (container) => {
           navigate(`/tag-manager/${container.id}`)
@@ -128,7 +127,7 @@ function TagManagerContent() {
             Tag Manager
           </h1>
           <p className="text-muted-foreground mt-1">
-            Manage tags, triggers, and variables for your domains.
+            Manage tags, triggers, and variables for your domain.
           </p>
         </div>
       </div>
@@ -146,18 +145,24 @@ function TagManagerContent() {
             </p>
           </CardContent>
         </Card>
+      ) : !selectedDomain ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Globe className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-muted-foreground">
+              Select a domain from the sidebar to manage its container.
+            </p>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {domains.map((domain) => (
-            <ContainerCard
-              key={domain.id}
-              domain={domain}
-              container={getContainerForDomain(domain.id)}
-              onOpen={handleOpen}
-              onCreate={handleCreate}
-              isCreating={createContainer.isPending}
-            />
-          ))}
+        <div className="max-w-md">
+          <ContainerCard
+            domain={selectedDomain}
+            container={getContainerForDomain(selectedDomain.id)}
+            onOpen={handleOpen}
+            onCreate={handleCreate}
+            isCreating={createContainer.isPending}
+          />
         </div>
       )}
     </div>

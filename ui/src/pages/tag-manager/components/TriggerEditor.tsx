@@ -111,7 +111,7 @@ function TriggerEditorForm({
         </SheetDescription>
       </SheetHeader>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-4 px-4">
         <div className="space-y-2">
           <Label htmlFor="trigger-name">Name</Label>
           <Input

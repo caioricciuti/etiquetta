@@ -151,7 +151,7 @@ func (d *Detector) detectCoordinateClustering(domain string, cutoff int64) []Fra
 	// Look for >10% of clicks at the exact same coordinates
 	query := `
 		SELECT click_x, click_y, COUNT(*) as click_count,
-			CAST(COUNT(*) AS FLOAT) / (SELECT COUNT(*) FROM events WHERE timestamp >= ? AND event_type = 'click' AND click_x IS NOT NULL) * 100 as pct
+			CAST(COUNT(*) AS DOUBLE) / (SELECT COUNT(*) FROM events WHERE timestamp >= ? AND event_type = 'click' AND click_x IS NOT NULL) * 100 as pct
 		FROM events
 		WHERE timestamp >= ?
 			AND event_type = 'click'
@@ -161,7 +161,7 @@ func (d *Detector) detectCoordinateClustering(domain string, cutoff int64) []Fra
 	if domain != "" {
 		query = `
 			SELECT click_x, click_y, COUNT(*) as click_count,
-				CAST(COUNT(*) AS FLOAT) / (SELECT COUNT(*) FROM events WHERE timestamp >= ? AND event_type = 'click' AND click_x IS NOT NULL AND domain = ?) * 100 as pct
+				CAST(COUNT(*) AS DOUBLE) / (SELECT COUNT(*) FROM events WHERE timestamp >= ? AND event_type = 'click' AND click_x IS NOT NULL AND domain = ?) * 100 as pct
 			FROM events
 			WHERE timestamp >= ?
 				AND event_type = 'click'

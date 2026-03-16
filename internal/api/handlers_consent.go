@@ -41,13 +41,13 @@ func (h *Handlers) GetPublicConsentConfig(w http.ResponseWriter, r *http.Request
 	err := h.db.Conn().QueryRow("SELECT id FROM domains WHERE site_id = ? AND is_active = 1", siteID).Scan(&domainID)
 	if err != nil {
 		log.Printf("[consent] GetPublicConsentConfig: domain lookup failed for siteId=%s: %v", siteID, err)
-		writeError(w, http.StatusNotFound, "Domain not found")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	log.Printf("[consent] GetPublicConsentConfig: found domainId=%s", domainID)
 
 	// Find active consent config for this domain
-	// Scan JSON columns into strings first (modernc.org/sqlite doesn't scan TEXT → []byte)
+	// Scan JSON columns into strings first
 	var (
 		id, domID                                          string
 		version, cookieExpiry                               int
@@ -71,7 +71,7 @@ func (h *Handlers) GetPublicConsentConfig(w http.ResponseWriter, r *http.Request
 	)
 	if err != nil {
 		log.Printf("[consent] GetPublicConsentConfig: config query failed for domainId=%s: %v", domainID, err)
-		writeError(w, http.StatusNotFound, "No consent config found")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -402,7 +402,7 @@ func (h *Handlers) GetConsentAnalytics(w http.ResponseWriter, r *http.Request) {
 	// Timeseries — daily breakdown
 	var timeseries []map[string]interface{}
 	tsRows, err := h.db.Conn().Query(`
-		SELECT date(timestamp / 1000, 'unixepoch') as day,
+		SELECT strftime('%Y-%m-%d', to_timestamp(timestamp / 1000)::TIMESTAMP) as day,
 			SUM(CASE WHEN action = 'show' THEN 1 ELSE 0 END) as shows,
 			SUM(CASE WHEN action = 'accept_all' THEN 1 ELSE 0 END) as accept_all,
 			SUM(CASE WHEN action = 'reject_all' THEN 1 ELSE 0 END) as reject_all,

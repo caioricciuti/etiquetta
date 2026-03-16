@@ -7,7 +7,15 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Users as UsersIcon, Plus, Trash2, Loader2, Shield, Eye, AlertCircle, X, Pencil } from 'lucide-react'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetFooter,
+} from '@/components/ui/sheet'
+import { Users as UsersIcon, Plus, Trash2, Loader2, Shield, Eye, AlertCircle, Pencil } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Select,
@@ -33,8 +41,8 @@ export function UsersSettings() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Create user form state
-  const [showCreateForm, setShowCreateForm] = useState(false)
+  // Create user sheet state
+  const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [newUser, setNewUser] = useState({
@@ -45,7 +53,7 @@ export function UsersSettings() {
     role: 'viewer' as 'admin' | 'viewer',
   })
 
-  // Edit user state
+  // Edit user sheet state
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [editForm, setEditForm] = useState({ name: '', role: '' as 'admin' | 'viewer', password: '' })
   const [saving, setSaving] = useState(false)
@@ -98,6 +106,12 @@ export function UsersSettings() {
     )
   }
 
+  function openCreateSheet() {
+    setNewUser({ email: '', name: '', password: '', confirmPassword: '', role: 'viewer' })
+    setCreateError(null)
+    setCreateOpen(true)
+  }
+
   async function handleCreateUser(e: React.FormEvent) {
     e.preventDefault()
     setCreateError(null)
@@ -129,14 +143,8 @@ export function UsersSettings() {
         }),
       })
 
-      setNewUser({
-        email: '',
-        name: '',
-        password: '',
-        confirmPassword: '',
-        role: 'viewer',
-      })
-      setShowCreateForm(false)
+      setCreateOpen(false)
+      toast.success('User created')
       fetchUsers()
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create user')
@@ -157,13 +165,14 @@ export function UsersSettings() {
 
     try {
       await fetchAPI(`/api/users/${userId}`, { method: 'DELETE' })
+      toast.success('User deleted')
       fetchUsers()
     } catch (err) {
       toast.error('Failed to delete user', { description: err instanceof Error ? err.message : undefined })
     }
   }
 
-  function startEditUser(user: User) {
+  function openEditSheet(user: User) {
     setEditingUser(user)
     setEditForm({ name: user.name || '', role: user.role, password: '' })
     setEditError(null)
@@ -213,225 +222,202 @@ export function UsersSettings() {
   return (
     <SettingsLayout title="Users" description="Manage team access to your analytics">
       {/* Header with Add button */}
-      {!showCreateForm && (
-        <div className="flex justify-end -mt-4 mb-2">
-          <Button
-            onClick={() => setShowCreateForm(true)}
-            disabled={maxUsers !== -1 && users.length >= maxUsers}
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add User
-          </Button>
-        </div>
-      )}
+      <div className="flex justify-end -mt-4 mb-2">
+        <Button
+          onClick={openCreateSheet}
+          disabled={maxUsers !== -1 && users.length >= maxUsers}
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Add User
+        </Button>
+      </div>
 
-      {/* Create user form */}
-      {showCreateForm && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Add User</CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setShowCreateForm(false)
-                  setCreateError(null)
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <CardDescription>
+      {/* Create user sheet */}
+      <Sheet open={createOpen} onOpenChange={setCreateOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Add User</SheetTitle>
+            <SheetDescription>
               Create a new user account. They will be able to log in with the credentials you provide.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleCreateUser} className="space-y-4">
+            </SheetDescription>
+          </SheetHeader>
+          <form onSubmit={handleCreateUser} className="flex flex-col flex-1 overflow-y-auto px-4">
+            <div className="space-y-4">
               {createError && (
                 <div className="p-3 rounded text-sm bg-destructive/10 text-destructive">
                   {createError}
                 </div>
               )}
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    placeholder="user@example.com"
-                    value={newUser.email}
-                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="name">Name (optional)</Label>
-                  <Input
-                    id="name"
-                    type="text"
-                    placeholder="John Doe"
-                    value={newUser.name}
-                    onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="role">Role</Label>
-                  <Select
-                    value={newUser.role}
-                    onValueChange={(value: 'admin' | 'viewer') => setNewUser({ ...newUser, role: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="viewer">
-                        <div className="flex items-center gap-2">
-                          <Eye className="h-4 w-4" />
-                          Viewer
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="admin">
-                        <div className="flex items-center gap-2">
-                          <Shield className="h-4 w-4" />
-                          Admin
-                        </div>
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Viewers can view analytics. Admins can manage settings and users.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    placeholder="Minimum 8 characters"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirm Password</Label>
-                  <Input
-                    id="confirmPassword"
-                    type="password"
-                    placeholder="Confirm password"
-                    value={newUser.confirmPassword}
-                    onChange={(e) => setNewUser({ ...newUser, confirmPassword: e.target.value })}
-                    required
-                  />
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="create-email">Email</Label>
+                <Input
+                  id="create-email"
+                  type="email"
+                  placeholder="user@example.com"
+                  value={newUser.email}
+                  onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                  required
+                />
               </div>
 
-              <div className="flex justify-end gap-2 pt-4">
-                <Button type="button" variant="outline" onClick={() => setShowCreateForm(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={creating}>
-                  {creating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Create User
-                </Button>
+              <div className="space-y-2">
+                <Label htmlFor="create-name">Name (optional)</Label>
+                <Input
+                  id="create-name"
+                  type="text"
+                  placeholder="John Doe"
+                  value={newUser.name}
+                  onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
+                />
               </div>
-            </form>
-          </CardContent>
-        </Card>
-      )}
 
-      {/* Edit user form */}
-      {editingUser && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Edit User</CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setEditingUser(null)}>
-                <X className="h-4 w-4" />
-              </Button>
+              <div className="space-y-2">
+                <Label htmlFor="create-role">Role</Label>
+                <Select
+                  value={newUser.role}
+                  onValueChange={(value: 'admin' | 'viewer') => setNewUser({ ...newUser, role: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="viewer">
+                      <div className="flex items-center gap-2">
+                        <Eye className="h-4 w-4" />
+                        Viewer
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="admin">
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-4 w-4" />
+                        Admin
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Viewers can view analytics. Admins can manage settings and users.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="create-password">Password</Label>
+                <Input
+                  id="create-password"
+                  type="password"
+                  placeholder="Minimum 8 characters"
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="create-confirm">Confirm Password</Label>
+                <Input
+                  id="create-confirm"
+                  type="password"
+                  placeholder="Confirm password"
+                  value={newUser.confirmPassword}
+                  onChange={(e) => setNewUser({ ...newUser, confirmPassword: e.target.value })}
+                  required
+                />
+              </div>
             </div>
-            <CardDescription>
-              Editing {editingUser.email}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleEditUser} className="space-y-4">
+
+            <SheetFooter className="px-0">
+              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating}>
+                {creating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Create User
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      {/* Edit user sheet */}
+      <Sheet open={!!editingUser} onOpenChange={(open) => { if (!open) setEditingUser(null) }}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Edit User</SheetTitle>
+            <SheetDescription>
+              {editingUser?.email}
+            </SheetDescription>
+          </SheetHeader>
+          <form onSubmit={handleEditUser} className="flex flex-col flex-1 overflow-y-auto px-4">
+            <div className="space-y-4">
               {editError && (
                 <div className="p-3 rounded text-sm bg-destructive/10 text-destructive">
                   {editError}
                 </div>
               )}
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Name</Label>
-                  <Input
-                    type="text"
-                    placeholder="Name"
-                    value={editForm.name}
-                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Role</Label>
-                  <Select
-                    value={editForm.role}
-                    onValueChange={(value: 'admin' | 'viewer') => setEditForm({ ...editForm, role: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="viewer">
-                        <div className="flex items-center gap-2">
-                          <Eye className="h-4 w-4" />
-                          Viewer
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="admin">
-                        <div className="flex items-center gap-2">
-                          <Shield className="h-4 w-4" />
-                          Admin
-                        </div>
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>New Password (optional)</Label>
-                  <Input
-                    type="password"
-                    placeholder="Leave blank to keep current"
-                    value={editForm.password}
-                    onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Only fill this if you want to change the password.
-                  </p>
-                </div>
+              <div className="space-y-2">
+                <Label>Name</Label>
+                <Input
+                  type="text"
+                  placeholder="Name"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                />
               </div>
 
-              <div className="flex justify-end gap-2 pt-4">
-                <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={saving}>
-                  {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Save Changes
-                </Button>
+              <div className="space-y-2">
+                <Label>Role</Label>
+                <Select
+                  value={editForm.role}
+                  onValueChange={(value: 'admin' | 'viewer') => setEditForm({ ...editForm, role: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="viewer">
+                      <div className="flex items-center gap-2">
+                        <Eye className="h-4 w-4" />
+                        Viewer
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="admin">
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-4 w-4" />
+                        Admin
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-            </form>
-          </CardContent>
-        </Card>
-      )}
+
+              <div className="space-y-2">
+                <Label>New Password (optional)</Label>
+                <Input
+                  type="password"
+                  placeholder="Leave blank to keep current"
+                  value={editForm.password}
+                  onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Only fill this if you want to change the password.
+                </p>
+              </div>
+            </div>
+
+            <SheetFooter className="px-0">
+              <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Save Changes
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
 
       {/* User limit warning */}
       {maxUsers !== -1 && users.length >= maxUsers && (
@@ -520,7 +506,7 @@ export function UsersSettings() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => startEditUser(user)}
+                      onClick={() => openEditSheet(user)}
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>

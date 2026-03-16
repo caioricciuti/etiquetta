@@ -132,7 +132,7 @@ func (d *Detector) populateBounceRates(results []SourceQuality, domain string, c
 
 		query := `
 			SELECT
-				CAST(SUM(CASE WHEN pv_count = 1 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(*), 0) * 100
+				CAST(SUM(CASE WHEN pv_count = 1 THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) * 100
 			FROM (
 				SELECT session_id, COUNT(*) as pv_count
 				FROM events

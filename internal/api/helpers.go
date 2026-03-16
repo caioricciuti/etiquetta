@@ -79,7 +79,7 @@ func getDomainParam(r *http.Request) string {
 }
 
 // getDateRangeParams parses start/end ISO strings or falls back to days parameter
-// Returns startMs and endMs as millisecond timestamps for SQLite queries
+// Returns startMs and endMs as millisecond timestamps for queries
 func getDateRangeParams(r *http.Request, defaultDays int) (startMs, endMs int64) {
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")

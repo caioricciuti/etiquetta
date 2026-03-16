@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/caioricciuti/etiquetta/internal/auth"
+	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
@@ -27,11 +28,11 @@ var trackerJS embed.FS
 var consentJS embed.FS
 
 // NewRouter creates the HTTP router
-func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS) http.Handler {
+func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
-	r.Use(middleware.Logger)
+	r.Use(RequestLogger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Compress(5))
@@ -75,6 +76,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		idGen:          idGen,
 		cfg:            cfg,
 		auth:           authService,
+		bufferMgr:      bufferMgr,
 	}
 
 	// ========== Public endpoints ==========
@@ -116,6 +118,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Group(func(r chi.Router) {
 				r.Use(authMiddleware.RequireAuth)
 				r.Get("/me", h.GetCurrentUser)
+				r.Put("/profile", h.UpdateProfile)
 				r.Post("/password", h.ChangePassword)
 			})
 		})

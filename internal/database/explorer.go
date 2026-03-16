@@ -28,7 +28,7 @@ const QueryTimeout = 5 * time.Second
 var dangerousKeywords = []string{
 	"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
 	"TRUNCATE", "GRANT", "REVOKE", "ATTACH", "DETACH",
-	"VACUUM", "REINDEX", "PRAGMA",
+	"VACUUM", "COPY", "EXPORT", "IMPORT", "INSTALL", "LOAD",
 }
 
 // isReadOnlyQuery checks if a query is safe to execute
@@ -163,19 +163,20 @@ func (db *DB) GetTableSchema() (map[string][]map[string]string, error) {
 
 	// Only return schema for allowed tables
 	for table := range AllowedExplorerTables {
-		rows, err := db.conn.Query("PRAGMA table_info(" + table + ")")
+		rows, err := db.conn.Query(`
+			SELECT column_name, data_type
+			FROM information_schema.columns
+			WHERE table_name = ?
+			ORDER BY ordinal_position
+		`, table)
 		if err != nil {
 			continue
 		}
 
 		var columns []map[string]string
 		for rows.Next() {
-			var cid int
 			var name, colType string
-			var notNull, pk int
-			var dfltValue interface{}
-
-			if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			if err := rows.Scan(&name, &colType); err != nil {
 				continue
 			}
 

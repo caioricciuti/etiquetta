@@ -9,9 +9,8 @@ func (db *DB) Migrate() error {
 	// Create migrations table
 	_, err := db.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS migrations (
-			id INTEGER PRIMARY KEY,
-			version INTEGER UNIQUE NOT NULL,
-			applied_at INTEGER NOT NULL
+			version INTEGER PRIMARY KEY,
+			applied_at BIGINT NOT NULL
 		)
 	`)
 	if err != nil {
@@ -33,30 +32,30 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Events table (pageviews, custom events, clicks, scroll, identify)
 				CREATE TABLE IF NOT EXISTS events (
-					id TEXT PRIMARY KEY,
-					timestamp INTEGER NOT NULL,
-					event_type TEXT NOT NULL,
-					event_name TEXT,
-					session_id TEXT NOT NULL,
-					visitor_hash TEXT NOT NULL,
-					user_id TEXT,
-					domain TEXT NOT NULL,
-					url TEXT NOT NULL,
-					path TEXT NOT NULL,
-					page_title TEXT,
-					referrer_url TEXT,
-					referrer_type TEXT,
-					utm_source TEXT,
-					utm_medium TEXT,
-					utm_campaign TEXT,
-					geo_country TEXT,
-					geo_city TEXT,
-					geo_region TEXT,
-					browser_name TEXT,
-					os_name TEXT,
-					device_type TEXT,
+					id VARCHAR PRIMARY KEY,
+					timestamp BIGINT NOT NULL,
+					event_type VARCHAR NOT NULL,
+					event_name VARCHAR,
+					session_id VARCHAR NOT NULL,
+					visitor_hash VARCHAR NOT NULL,
+					user_id VARCHAR,
+					domain VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					path VARCHAR NOT NULL,
+					page_title VARCHAR,
+					referrer_url VARCHAR,
+					referrer_type VARCHAR,
+					utm_source VARCHAR,
+					utm_medium VARCHAR,
+					utm_campaign VARCHAR,
+					geo_country VARCHAR,
+					geo_city VARCHAR,
+					geo_region VARCHAR,
+					browser_name VARCHAR,
+					os_name VARCHAR,
+					device_type VARCHAR,
 					is_bot INTEGER DEFAULT 0,
-					props TEXT DEFAULT '{}'
+					props VARCHAR DEFAULT '{}'
 				);
 
 				-- Indexes for events
@@ -74,22 +73,22 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Performance table (Core Web Vitals)
 				CREATE TABLE IF NOT EXISTS performance (
-					id TEXT PRIMARY KEY,
-					timestamp INTEGER NOT NULL,
-					session_id TEXT NOT NULL,
-					visitor_hash TEXT NOT NULL,
-					domain TEXT NOT NULL,
-					url TEXT NOT NULL,
-					path TEXT NOT NULL,
-					lcp REAL,
-					cls REAL,
-					fcp REAL,
-					ttfb REAL,
-					inp REAL,
-					page_load_time REAL,
-					device_type TEXT,
-					connection_type TEXT,
-					geo_country TEXT
+					id VARCHAR PRIMARY KEY,
+					timestamp BIGINT NOT NULL,
+					session_id VARCHAR NOT NULL,
+					visitor_hash VARCHAR NOT NULL,
+					domain VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					path VARCHAR NOT NULL,
+					lcp DOUBLE,
+					cls DOUBLE,
+					fcp DOUBLE,
+					ttfb DOUBLE,
+					inp DOUBLE,
+					page_load_time DOUBLE,
+					device_type VARCHAR,
+					connection_type VARCHAR,
+					geo_country VARCHAR
 				);
 
 				-- Indexes for performance
@@ -103,22 +102,22 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Errors table (JS errors, resource failures)
 				CREATE TABLE IF NOT EXISTS errors (
-					id TEXT PRIMARY KEY,
-					timestamp INTEGER NOT NULL,
-					session_id TEXT NOT NULL,
-					visitor_hash TEXT NOT NULL,
-					domain TEXT NOT NULL,
-					url TEXT NOT NULL,
-					path TEXT NOT NULL,
-					error_type TEXT NOT NULL,
-					error_message TEXT NOT NULL,
-					error_stack TEXT,
-					error_hash TEXT NOT NULL,
-					script_url TEXT,
+					id VARCHAR PRIMARY KEY,
+					timestamp BIGINT NOT NULL,
+					session_id VARCHAR NOT NULL,
+					visitor_hash VARCHAR NOT NULL,
+					domain VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					path VARCHAR NOT NULL,
+					error_type VARCHAR NOT NULL,
+					error_message VARCHAR NOT NULL,
+					error_stack VARCHAR,
+					error_hash VARCHAR NOT NULL,
+					script_url VARCHAR,
 					line_number INTEGER,
 					column_number INTEGER,
-					browser_name TEXT,
-					geo_country TEXT
+					browser_name VARCHAR,
+					geo_country VARCHAR
 				);
 
 				-- Indexes for errors
@@ -133,17 +132,19 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Settings table
 				CREATE TABLE IF NOT EXISTS settings (
-					key TEXT PRIMARY KEY,
-					value TEXT NOT NULL,
-					updated_at INTEGER NOT NULL
+					key VARCHAR PRIMARY KEY,
+					value VARCHAR NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
 
 				-- Insert default settings
-				INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
-					('track_performance', 'true', strftime('%s', 'now') * 1000),
-					('track_errors', 'true', strftime('%s', 'now') * 1000),
-					('session_timeout_minutes', '30', strftime('%s', 'now') * 1000),
-					('respect_dnt', 'true', strftime('%s', 'now') * 1000);
+				INSERT INTO settings (key, value, updated_at)
+				VALUES
+					('track_performance', 'true', epoch_ms(now())),
+					('track_errors', 'true', epoch_ms(now())),
+					('session_timeout_minutes', '30', epoch_ms(now())),
+					('respect_dnt', 'true', epoch_ms(now()))
+				ON CONFLICT (key) DO NOTHING;
 			`,
 		},
 		{
@@ -151,22 +152,21 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Users table (for auth)
 				CREATE TABLE IF NOT EXISTS users (
-					id TEXT PRIMARY KEY,
-					email TEXT UNIQUE NOT NULL,
-					password_hash TEXT NOT NULL,
-					name TEXT,
-					role TEXT DEFAULT 'viewer',
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL
+					id VARCHAR PRIMARY KEY,
+					email VARCHAR UNIQUE NOT NULL,
+					password_hash VARCHAR NOT NULL,
+					name VARCHAR,
+					role VARCHAR DEFAULT 'viewer',
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
 
 				-- Sessions table (for auth)
 				CREATE TABLE IF NOT EXISTS sessions (
-					id TEXT PRIMARY KEY,
-					user_id TEXT NOT NULL,
-					expires_at INTEGER NOT NULL,
-					created_at INTEGER NOT NULL,
-					FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+					id VARCHAR PRIMARY KEY,
+					user_id VARCHAR NOT NULL,
+					expires_at BIGINT NOT NULL,
+					created_at BIGINT NOT NULL
 				);
 
 				CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
@@ -178,31 +178,31 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Domains table (for multi-site tracking)
 				CREATE TABLE IF NOT EXISTS domains (
-					id TEXT PRIMARY KEY,
-					name TEXT NOT NULL,
-					domain TEXT UNIQUE NOT NULL,
-					created_by TEXT,
-					created_at INTEGER NOT NULL,
-					is_active INTEGER DEFAULT 1,
-					FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+					id VARCHAR PRIMARY KEY,
+					name VARCHAR NOT NULL,
+					domain VARCHAR UNIQUE NOT NULL,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					is_active INTEGER DEFAULT 1
 				);
 
 				CREATE INDEX IF NOT EXISTS idx_domains_domain ON domains(domain);
 				CREATE INDEX IF NOT EXISTS idx_domains_active ON domains(is_active);
 
 				-- Add setup_complete setting
-				INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
-					('setup_complete', 'false', strftime('%s', 'now') * 1000);
+				INSERT INTO settings (key, value, updated_at)
+				VALUES ('setup_complete', 'false', epoch_ms(now()))
+				ON CONFLICT (key) DO NOTHING;
 			`,
 		},
 		{
 			version: 7,
 			sql: `
 				-- Add site_id to domains for tracking script authentication
-				ALTER TABLE domains ADD COLUMN site_id TEXT;
+				ALTER TABLE domains ADD COLUMN site_id VARCHAR;
 
 				-- Generate site_id for existing domains
-				UPDATE domains SET site_id = 'site_' || lower(hex(randomblob(8))) WHERE site_id IS NULL;
+				UPDATE domains SET site_id = 'site_' || substring(md5(random()::VARCHAR), 1, 16) WHERE site_id IS NULL;
 
 				-- Create unique index on site_id
 				CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_site_id ON domains(site_id);
@@ -213,8 +213,8 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Bot detection columns
 				ALTER TABLE events ADD COLUMN bot_score INTEGER DEFAULT 0;
-				ALTER TABLE events ADD COLUMN bot_signals TEXT DEFAULT '[]';
-				ALTER TABLE events ADD COLUMN bot_category TEXT DEFAULT 'human';
+				ALTER TABLE events ADD COLUMN bot_signals VARCHAR DEFAULT '[]';
+				ALTER TABLE events ADD COLUMN bot_category VARCHAR DEFAULT 'human';
 
 				-- Behavioral flags
 				ALTER TABLE events ADD COLUMN has_scroll INTEGER DEFAULT 0;
@@ -229,7 +229,7 @@ func (db *DB) Migrate() error {
 
 				-- IP classification
 				ALTER TABLE events ADD COLUMN datacenter_ip INTEGER DEFAULT 0;
-				ALTER TABLE events ADD COLUMN ip_hash TEXT;
+				ALTER TABLE events ADD COLUMN ip_hash VARCHAR;
 
 				-- Indexes for bot filtering
 				CREATE INDEX IF NOT EXISTS idx_events_bot_category ON events(bot_category);
@@ -241,34 +241,34 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Campaigns table for ad fraud detection
 				CREATE TABLE IF NOT EXISTS campaigns (
-					id TEXT PRIMARY KEY,
-					name TEXT NOT NULL,
-					utm_source TEXT,
-					utm_medium TEXT,
-					utm_campaign TEXT,
-					cpc REAL DEFAULT 0,
-					cpm REAL DEFAULT 0,
-					budget REAL DEFAULT 0,
-					start_date INTEGER,
-					end_date INTEGER,
-					created_at INTEGER NOT NULL
+					id VARCHAR PRIMARY KEY,
+					name VARCHAR NOT NULL,
+					utm_source VARCHAR,
+					utm_medium VARCHAR,
+					utm_campaign VARCHAR,
+					cpc DOUBLE DEFAULT 0,
+					cpm DOUBLE DEFAULT 0,
+					budget DOUBLE DEFAULT 0,
+					start_date BIGINT,
+					end_date BIGINT,
+					created_at BIGINT NOT NULL
 				);
 
 				-- Visitor sessions table (materialized)
 				CREATE TABLE IF NOT EXISTS visitor_sessions (
-					id TEXT PRIMARY KEY,
-					session_id TEXT UNIQUE,
-					visitor_hash TEXT,
-					domain TEXT,
-					start_time INTEGER,
-					end_time INTEGER,
-					duration INTEGER,
+					id VARCHAR PRIMARY KEY,
+					session_id VARCHAR UNIQUE,
+					visitor_hash VARCHAR,
+					domain VARCHAR,
+					start_time BIGINT,
+					end_time BIGINT,
+					duration BIGINT,
 					pageviews INTEGER,
-					entry_url TEXT,
-					exit_url TEXT,
+					entry_url VARCHAR,
+					exit_url VARCHAR,
 					is_bounce INTEGER,
 					bot_score INTEGER,
-					bot_category TEXT
+					bot_category VARCHAR
 				);
 
 				-- Indexes for campaigns and sessions
@@ -282,8 +282,8 @@ func (db *DB) Migrate() error {
 			version: 10,
 			sql: `
 				-- Add geo coordinates for map plotting
-				ALTER TABLE events ADD COLUMN geo_latitude REAL;
-				ALTER TABLE events ADD COLUMN geo_longitude REAL;
+				ALTER TABLE events ADD COLUMN geo_latitude DOUBLE;
+				ALTER TABLE events ADD COLUMN geo_longitude DOUBLE;
 
 				-- Index for geo queries
 				CREATE INDEX IF NOT EXISTS idx_events_geo ON events(geo_latitude, geo_longitude);
@@ -292,16 +292,17 @@ func (db *DB) Migrate() error {
 		{
 			version: 11,
 			sql: `
-				-- Add settings for configuration (replacing .env)
-				INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
-					('secret_key', '', strftime('%s', 'now') * 1000),
-					('maxmind_account_id', '', strftime('%s', 'now') * 1000),
-					('maxmind_license_key', '', strftime('%s', 'now') * 1000),
-					('geoip_path', './data/GeoLite2-City.mmdb', strftime('%s', 'now') * 1000),
-					('geoip_auto_update', 'false', strftime('%s', 'now') * 1000),
-					('geoip_last_updated', '', strftime('%s', 'now') * 1000),
-					('allowed_origins', '*', strftime('%s', 'now') * 1000),
-					('listen_addr', ':3456', strftime('%s', 'now') * 1000);
+				-- Add settings for configuration
+				INSERT INTO settings (key, value, updated_at) VALUES
+					('secret_key', '', epoch_ms(now())),
+					('maxmind_account_id', '', epoch_ms(now())),
+					('maxmind_license_key', '', epoch_ms(now())),
+					('geoip_path', './data/GeoLite2-City.mmdb', epoch_ms(now())),
+					('geoip_auto_update', 'false', epoch_ms(now())),
+					('geoip_last_updated', '', epoch_ms(now())),
+					('allowed_origins', '*', epoch_ms(now())),
+					('listen_addr', ':3456', epoch_ms(now()))
+				ON CONFLICT (key) DO NOTHING;
 			`,
 		},
 		{
@@ -326,112 +327,103 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Consent tables
 				CREATE TABLE IF NOT EXISTS consent_configs (
-					id TEXT PRIMARY KEY,
-					domain_id TEXT NOT NULL,
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
 					version INTEGER NOT NULL DEFAULT 1,
 					is_active INTEGER NOT NULL DEFAULT 1,
-					categories TEXT NOT NULL DEFAULT '[]',
-					appearance TEXT NOT NULL DEFAULT '{}',
-					translations TEXT NOT NULL DEFAULT '{}',
-					cookie_name TEXT NOT NULL DEFAULT 'etiquetta_consent',
+					categories VARCHAR NOT NULL DEFAULT '[]',
+					appearance VARCHAR NOT NULL DEFAULT '{}',
+					translations VARCHAR NOT NULL DEFAULT '{}',
+					cookie_name VARCHAR NOT NULL DEFAULT 'etiquetta_consent',
 					cookie_expiry_days INTEGER NOT NULL DEFAULT 365,
 					auto_language INTEGER NOT NULL DEFAULT 1,
-					geo_targeting TEXT NOT NULL DEFAULT '[]',
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL,
-					FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+					geo_targeting VARCHAR NOT NULL DEFAULT '[]',
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
-				CREATE INDEX idx_consent_configs_domain ON consent_configs(domain_id);
-				CREATE UNIQUE INDEX idx_consent_configs_version ON consent_configs(domain_id, version);
+				CREATE INDEX IF NOT EXISTS idx_consent_configs_domain ON consent_configs(domain_id);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_consent_configs_version ON consent_configs(domain_id, version);
 
 				CREATE TABLE IF NOT EXISTS consent_records (
-					id TEXT PRIMARY KEY,
-					domain_id TEXT NOT NULL,
-					visitor_hash TEXT NOT NULL,
-					ip_hash TEXT,
-					categories TEXT NOT NULL DEFAULT '{}',
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					visitor_hash VARCHAR NOT NULL,
+					ip_hash VARCHAR,
+					categories VARCHAR NOT NULL DEFAULT '{}',
 					config_version INTEGER NOT NULL,
-					action TEXT NOT NULL,
-					user_agent TEXT,
-					geo_country TEXT,
-					timestamp INTEGER NOT NULL,
-					FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+					action VARCHAR NOT NULL,
+					user_agent VARCHAR,
+					geo_country VARCHAR,
+					timestamp BIGINT NOT NULL
 				);
-				CREATE INDEX idx_consent_records_domain_ts ON consent_records(domain_id, timestamp);
-				CREATE INDEX idx_consent_records_visitor ON consent_records(visitor_hash);
+				CREATE INDEX IF NOT EXISTS idx_consent_records_domain_ts ON consent_records(domain_id, timestamp);
+				CREATE INDEX IF NOT EXISTS idx_consent_records_visitor ON consent_records(visitor_hash);
 
 				-- Tag Manager tables
 				CREATE TABLE IF NOT EXISTS tm_containers (
-					id TEXT PRIMARY KEY,
-					domain_id TEXT NOT NULL,
-					name TEXT NOT NULL,
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
 					published_version INTEGER DEFAULT 0,
 					draft_version INTEGER DEFAULT 1,
-					published_at INTEGER,
-					published_by TEXT,
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL,
-					FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+					published_at BIGINT,
+					published_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL,
 					UNIQUE(domain_id)
 				);
 
 				CREATE TABLE IF NOT EXISTS tm_tags (
-					id TEXT PRIMARY KEY,
-					container_id TEXT NOT NULL,
-					name TEXT NOT NULL,
-					tag_type TEXT NOT NULL,
-					config TEXT NOT NULL DEFAULT '{}',
-					consent_category TEXT NOT NULL DEFAULT 'marketing',
+					id VARCHAR PRIMARY KEY,
+					container_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					tag_type VARCHAR NOT NULL,
+					config VARCHAR NOT NULL DEFAULT '{}',
+					consent_category VARCHAR NOT NULL DEFAULT 'marketing',
 					priority INTEGER DEFAULT 0,
 					is_enabled INTEGER DEFAULT 1,
 					version INTEGER DEFAULT 1,
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL,
-					FOREIGN KEY (container_id) REFERENCES tm_containers(id) ON DELETE CASCADE
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
-				CREATE INDEX idx_tm_tags_container ON tm_tags(container_id);
+				CREATE INDEX IF NOT EXISTS idx_tm_tags_container ON tm_tags(container_id);
 
 				CREATE TABLE IF NOT EXISTS tm_triggers (
-					id TEXT PRIMARY KEY,
-					container_id TEXT NOT NULL,
-					name TEXT NOT NULL,
-					trigger_type TEXT NOT NULL,
-					config TEXT NOT NULL DEFAULT '{}',
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL,
-					FOREIGN KEY (container_id) REFERENCES tm_containers(id) ON DELETE CASCADE
+					id VARCHAR PRIMARY KEY,
+					container_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					trigger_type VARCHAR NOT NULL,
+					config VARCHAR NOT NULL DEFAULT '{}',
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
-				CREATE INDEX idx_tm_triggers_container ON tm_triggers(container_id);
+				CREATE INDEX IF NOT EXISTS idx_tm_triggers_container ON tm_triggers(container_id);
 
 				CREATE TABLE IF NOT EXISTS tm_tag_triggers (
-					tag_id TEXT NOT NULL,
-					trigger_id TEXT NOT NULL,
+					tag_id VARCHAR NOT NULL,
+					trigger_id VARCHAR NOT NULL,
 					is_exception INTEGER DEFAULT 0,
-					PRIMARY KEY (tag_id, trigger_id),
-					FOREIGN KEY (tag_id) REFERENCES tm_tags(id) ON DELETE CASCADE,
-					FOREIGN KEY (trigger_id) REFERENCES tm_triggers(id) ON DELETE CASCADE
+					PRIMARY KEY (tag_id, trigger_id)
 				);
 
 				CREATE TABLE IF NOT EXISTS tm_variables (
-					id TEXT PRIMARY KEY,
-					container_id TEXT NOT NULL,
-					name TEXT NOT NULL,
-					variable_type TEXT NOT NULL,
-					config TEXT NOT NULL DEFAULT '{}',
-					created_at INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL,
-					FOREIGN KEY (container_id) REFERENCES tm_containers(id) ON DELETE CASCADE
+					id VARCHAR PRIMARY KEY,
+					container_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					variable_type VARCHAR NOT NULL,
+					config VARCHAR NOT NULL DEFAULT '{}',
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
 				);
-				CREATE INDEX idx_tm_variables_container ON tm_variables(container_id);
+				CREATE INDEX IF NOT EXISTS idx_tm_variables_container ON tm_variables(container_id);
 
 				CREATE TABLE IF NOT EXISTS tm_snapshots (
-					id TEXT PRIMARY KEY,
-					container_id TEXT NOT NULL,
+					id VARCHAR PRIMARY KEY,
+					container_id VARCHAR NOT NULL,
 					version INTEGER NOT NULL,
-					snapshot TEXT NOT NULL,
-					published_by TEXT,
-					published_at INTEGER NOT NULL,
-					FOREIGN KEY (container_id) REFERENCES tm_containers(id) ON DELETE CASCADE,
+					snapshot VARCHAR NOT NULL,
+					published_by VARCHAR,
+					published_at BIGINT NOT NULL,
 					UNIQUE(container_id, version)
 				);
 			`,
@@ -441,15 +433,15 @@ func (db *DB) Migrate() error {
 			sql: `
 				-- Admin audit log for GDPR compliance
 				CREATE TABLE IF NOT EXISTS audit_log (
-					id TEXT PRIMARY KEY,
-					timestamp INTEGER NOT NULL,
-					user_id TEXT NOT NULL,
-					user_email TEXT NOT NULL,
-					action TEXT NOT NULL,
-					resource_type TEXT NOT NULL,
-					resource_id TEXT,
-					detail TEXT,
-					ip_address TEXT
+					id VARCHAR PRIMARY KEY,
+					timestamp BIGINT NOT NULL,
+					user_id VARCHAR NOT NULL,
+					user_email VARCHAR NOT NULL,
+					action VARCHAR NOT NULL,
+					resource_type VARCHAR NOT NULL,
+					resource_id VARCHAR,
+					detail VARCHAR,
+					ip_address VARCHAR
 				);
 
 				CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
@@ -476,7 +468,7 @@ func (db *DB) Migrate() error {
 			return fmt.Errorf("failed to run migration %d: %w", m.version, err)
 		}
 
-		_, err = tx.Exec("INSERT INTO migrations (version, applied_at) VALUES (?, strftime('%s', 'now') * 1000)", m.version)
+		_, err = tx.Exec("INSERT INTO migrations (version, applied_at) VALUES (?, epoch_ms(now()))", m.version)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to record migration %d: %w", m.version, err)

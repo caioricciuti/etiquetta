@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/caioricciuti/etiquetta/internal/api"
 	"github.com/caioricciuti/etiquetta/internal/bot"
+	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
@@ -84,16 +86,28 @@ func runServe(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
-	// Initialize database
-	db, err := database.New(dataDir + "/etiquetta.db")
+	// Check if SQLite migration is needed
+	sqlitePath, needsMigration := database.NeedsSQLiteMigration(dataDir)
+
+	// Initialize DuckDB database
+	duckdbPath := dataDir + "/etiquetta.duckdb"
+	db, err := database.New(duckdbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
-	// Run migrations
+	// Run DuckDB migrations (create tables)
 	if err := db.Migrate(); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Migrate data from SQLite if needed
+	if needsMigration {
+		log.Printf("Found existing SQLite database at %s, migrating to DuckDB...", sqlitePath)
+		if err := database.MigrateSQLite(db.Conn(), sqlitePath); err != nil {
+			log.Fatalf("SQLite migration failed: %v", err)
+		}
 	}
 
 	// Initialize settings service
@@ -131,6 +145,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Initialize license manager
 	licenseManager := licensing.NewManager(cfg.DataDir + "/license.json")
 
+	// Initialize buffer manager
+	bufferCfg := buffer.DefaultConfig(duckdbPath, dataDir)
+	bufferMgr := buffer.NewBufferManager(db.Conn(), bufferCfg)
+
+	// Initialize compaction (runs daily)
+	compactor := buffer.NewCompactor(db.Conn())
+	compactCtx, compactCancel := context.WithCancel(context.Background())
+	compactor.StartSchedule(compactCtx, bufferCfg.CompactHour)
+
 	// Get embedded UI filesystem
 	uiDist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
@@ -138,7 +161,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create router
-	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist)
+	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr)
 
 	// Start data retention cleanup goroutine
 	go func() {
@@ -170,11 +193,28 @@ func runServe(cmd *cobra.Command, args []string) {
 		<-sigChan
 
 		log.Println("Shutting down server...")
-		server.Close()
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Stop accepting new requests
+		server.Shutdown(shutdownCtx)
+
+		// Stop background jobs
+		batchAnalyzer.Stop()
+		compactCancel()
+
+		// Flush all buffered data to DuckDB
+		log.Println("Flushing buffers...")
+		bufferMgr.Close(shutdownCtx)
+
+		// Close database
+		db.Close()
 	}()
 
 	log.Printf("Etiquetta %s starting on %s", Version, cfg.ListenAddr)
 	log.Printf("Data directory: %s", cfg.DataDir)
+	log.Printf("Database: DuckDB at %s", duckdbPath)
 	log.Printf("License: %s", licenseManager.GetTier())
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {

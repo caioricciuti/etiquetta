@@ -20,7 +20,9 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 	siteID := chi.URLParam(r, "siteId")
 	if siteID == "" {
 		log.Printf("[tm] ServeContainerScript: missing siteId")
-		http.NotFound(w, r)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte("/* etiquetta: container not available */"))
 		return
 	}
 
@@ -38,7 +40,9 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 	err := h.db.Conn().QueryRow("SELECT id FROM domains WHERE site_id = ? AND is_active = 1", siteID).Scan(&domainID)
 	if err != nil {
 		log.Printf("[tm] ServeContainerScript: domain not found for siteId=%s: %v", siteID, err)
-		http.NotFound(w, r)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte("/* etiquetta: container not available */"))
 		return
 	}
 
@@ -50,7 +54,9 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 	`, domainID).Scan(&containerID, &publishedVersion)
 	if err != nil {
 		log.Printf("[tm] ServeContainerScript: no published container for domainId=%s: %v", domainID, err)
-		http.NotFound(w, r)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte("/* etiquetta: container not available */"))
 		return
 	}
 
@@ -61,7 +67,9 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 	`, containerID, publishedVersion).Scan(&snapshotJSON)
 	if err != nil {
 		log.Printf("[tm] ServeContainerScript: snapshot not found for container=%s version=%d: %v", containerID, publishedVersion, err)
-		http.NotFound(w, r)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte("/* etiquetta: container not available */"))
 		return
 	}
 
@@ -435,41 +443,46 @@ func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Query failed")
 		return
 	}
-	defer rows.Close()
 
-	var tags []map[string]interface{}
+	type tagRow struct {
+		id, cID, name, tagType, config, consentCat string
+		priority, version                          int
+		isEnabled                                  bool
+		createdAt, updatedAt                       int64
+	}
+	var tagRows []tagRow
 	for rows.Next() {
-		var (
-			id, cID, name, tagType, config, consentCat string
-			priority, version                          int
-			isEnabled                                  bool
-			createdAt, updatedAt                       int64
-		)
-		if err := rows.Scan(&id, &cID, &name, &tagType, &config, &consentCat, &priority, &isEnabled, &version, &createdAt, &updatedAt); err != nil {
+		var t tagRow
+		if err := rows.Scan(&t.id, &t.cID, &t.name, &t.tagType, &t.config, &t.consentCat, &t.priority, &t.isEnabled, &t.version, &t.createdAt, &t.updatedAt); err != nil {
 			continue
 		}
-
-		// Get trigger IDs for this tag
-		triggerIDs := getTagTriggerIDs(h, id)
-
-		tags = append(tags, map[string]interface{}{
-			"id":               id,
-			"container_id":     cID,
-			"name":             name,
-			"tag_type":         tagType,
-			"config":           json.RawMessage(config),
-			"consent_category": consentCat,
-			"priority":         priority,
-			"is_enabled":       isEnabled,
-			"version":          version,
-			"trigger_ids":      triggerIDs,
-			"created_at":       createdAt,
-			"updated_at":       updatedAt,
-		})
+		tagRows = append(tagRows, t)
 	}
+	rows.Close()
 
-	if tags == nil {
-		tags = []map[string]interface{}{}
+	// Batch-fetch all trigger associations for this container
+	triggerMap := getContainerTagTriggerIDs(h, containerID)
+
+	tags := make([]map[string]interface{}, 0, len(tagRows))
+	for _, t := range tagRows {
+		triggerIDs := triggerMap[t.id]
+		if triggerIDs == nil {
+			triggerIDs = []string{}
+		}
+		tags = append(tags, map[string]interface{}{
+			"id":               t.id,
+			"container_id":     t.cID,
+			"name":             t.name,
+			"tag_type":         t.tagType,
+			"config":           json.RawMessage(t.config),
+			"consent_category": t.consentCat,
+			"priority":         t.priority,
+			"is_enabled":       t.isEnabled,
+			"version":          t.version,
+			"trigger_ids":      triggerIDs,
+			"created_at":       t.createdAt,
+			"updated_at":       t.updatedAt,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, tags)
@@ -951,7 +964,32 @@ func (h *Handlers) DeleteVariable(w http.ResponseWriter, r *http.Request) {
 
 // ========== Helpers ==========
 
-// getTagTriggerIDs returns trigger IDs associated with a tag
+// getContainerTagTriggerIDs batch-fetches all tag→trigger associations for a container.
+// Returns a map of tagID → []triggerID. Safe to call without an open rows cursor.
+func getContainerTagTriggerIDs(h *Handlers, containerID string) map[string][]string {
+	rows, err := h.db.Conn().Query(`
+		SELECT tt.tag_id, tt.trigger_id
+		FROM tm_tag_triggers tt
+		JOIN tm_tags t ON t.id = tt.tag_id
+		WHERE t.container_id = ?
+	`, containerID)
+	if err != nil {
+		return map[string][]string{}
+	}
+	defer rows.Close()
+
+	m := make(map[string][]string)
+	for rows.Next() {
+		var tagID, triggerID string
+		if rows.Scan(&tagID, &triggerID) == nil {
+			m[tagID] = append(m[tagID], triggerID)
+		}
+	}
+	return m
+}
+
+// getTagTriggerIDs returns trigger IDs associated with a single tag.
+// Only safe when no rows cursor is open (e.g. after QueryRow).
 func getTagTriggerIDs(h *Handlers, tagID string) []string {
 	rows, err := h.db.Conn().Query("SELECT trigger_id FROM tm_tag_triggers WHERE tag_id = ?", tagID)
 	if err != nil {
@@ -982,29 +1020,40 @@ func buildContainerSnapshot(h *Handlers, containerID string) (map[string]interfa
 	if err != nil {
 		return nil, err
 	}
-	defer tagRows.Close()
 
-	var tags []map[string]interface{}
+	type snapTag struct {
+		id, name, tagType, config, consentCat string
+		priority                              int
+	}
+	var rawTags []snapTag
 	for tagRows.Next() {
-		var id, name, tagType, config, consentCat string
-		var priority int
+		var t snapTag
 		var isEnabled bool
-		if err := tagRows.Scan(&id, &name, &tagType, &config, &consentCat, &priority, &isEnabled); err != nil {
+		if err := tagRows.Scan(&t.id, &t.name, &t.tagType, &t.config, &t.consentCat, &t.priority, &isEnabled); err != nil {
 			continue
 		}
-		triggerIDs := getTagTriggerIDs(h, id)
+		rawTags = append(rawTags, t)
+	}
+	tagRows.Close()
+
+	// Batch-fetch trigger associations
+	triggerMap := getContainerTagTriggerIDs(h, containerID)
+
+	tags := make([]map[string]interface{}, 0, len(rawTags))
+	for _, t := range rawTags {
+		triggerIDs := triggerMap[t.id]
+		if triggerIDs == nil {
+			triggerIDs = []string{}
+		}
 		tags = append(tags, map[string]interface{}{
-			"id":               id,
-			"name":             name,
-			"tag_type":         tagType,
-			"config":           json.RawMessage(config),
-			"consent_category": consentCat,
-			"priority":         priority,
+			"id":               t.id,
+			"name":             t.name,
+			"tag_type":         t.tagType,
+			"config":           json.RawMessage(t.config),
+			"consent_category": t.consentCat,
+			"priority":         t.priority,
 			"trigger_ids":      triggerIDs,
 		})
-	}
-	if tags == nil {
-		tags = []map[string]interface{}{}
 	}
 
 	// Triggers

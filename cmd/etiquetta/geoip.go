@@ -143,7 +143,7 @@ func runGeoIPConfigure(cmd *cobra.Command, args []string) {
 }
 
 func initSettingsService() (*database.DB, *settings.Service) {
-	db, err := database.New(dataDir + "/etiquetta.db")
+	db, err := database.New(dataDir + "/etiquetta.duckdb")
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

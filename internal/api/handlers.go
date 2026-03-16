@@ -14,6 +14,7 @@ import (
 
 	"github.com/caioricciuti/etiquetta/internal/auth"
 	"github.com/caioricciuti/etiquetta/internal/bot"
+	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
@@ -31,6 +32,7 @@ type Handlers struct {
 	idGen          *identification.Generator
 	cfg            *config.Config
 	auth           *auth.Auth
+	bufferMgr      *buffer.BufferManager
 
 	// SSE subscribers
 	sseClients map[chan []byte]bool
@@ -225,10 +227,16 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Batch insert
-	if err := h.db.InsertBatch(events, perfs, errs); err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save events")
-		return
+	// Buffer events for batch loading via parquet
+	ctx := r.Context()
+	for _, e := range events {
+		h.bufferMgr.AddEvent(ctx, buffer.ConvertEvent(e))
+	}
+	for _, p := range perfs {
+		h.bufferMgr.AddPerformance(ctx, buffer.ConvertPerformance(p))
+	}
+	for _, e := range errs {
+		h.bufferMgr.AddError(ctx, buffer.ConvertError(e))
 	}
 
 	// Notify SSE clients
@@ -521,7 +529,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	tx, _ := h.db.Conn().Begin()
 	changedKeys := make([]string, 0, len(settings))
 	for key, value := range settings {
-		tx.Exec("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+		tx.Exec("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
 			key, value, time.Now().UnixMilli())
 		changedKeys = append(changedKeys, key)
 	}
@@ -531,25 +539,24 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Database access for DuckDB WASM
+// Database access
 func (h *Handlers) ServeDatabase(w http.ResponseWriter, r *http.Request) {
-	dbPath := h.cfg.DataDir + "/etiquetta.db"
+	dbPath := h.cfg.DataDir + "/etiquetta.duckdb"
 
 	// Check if client wants partial content (Range request)
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader != "" {
-		// Let http.ServeFile handle Range requests
 		w.Header().Set("Accept-Ranges", "bytes")
 	}
 
-	w.Header().Set("Content-Type", "application/x-sqlite3")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
 	http.ServeFile(w, r, dbPath)
 }
 
 func (h *Handlers) GetDatabaseInfo(w http.ResponseWriter, r *http.Request) {
-	dbPath := h.cfg.DataDir + "/etiquetta.db"
+	dbPath := h.cfg.DataDir + "/etiquetta.duckdb"
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Database not found")
@@ -559,10 +566,10 @@ func (h *Handlers) GetDatabaseInfo(w http.ResponseWriter, r *http.Request) {
 	eventCount, _ := h.db.GetEventCount()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"size_bytes":   info.Size(),
-		"modified_at":  info.ModTime(),
-		"event_count":  eventCount,
-		"supports_wal": true,
+		"size_bytes":  info.Size(),
+		"modified_at": info.ModTime(),
+		"event_count": eventCount,
+		"engine":      "duckdb",
 	})
 }
 

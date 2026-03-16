@@ -9,9 +9,9 @@ LDFLAGS = -ldflags "-s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X
 # Build everything (UI + binary)
 all: ui build
 
-# Build the Go binary
+# Build the Go binary (CGO required for DuckDB)
 build:
-	go build $(LDFLAGS) -o bin/etiquetta ./cmd/etiquetta
+	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/etiquetta ./cmd/etiquetta
 
 # Run the server
 run: build
@@ -36,7 +36,7 @@ clean:
 
 # Run tests
 test:
-	go test -v ./...
+	CGO_ENABLED=1 go test -v ./...
 
 # Install to /usr/local/bin
 install: all
@@ -62,10 +62,10 @@ geoip:
 release: ui
 	@mkdir -p dist
 	@echo "Building release binaries..."
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/etiquetta-linux-amd64 ./cmd/etiquetta
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/etiquetta-linux-arm64 ./cmd/etiquetta
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/etiquetta-darwin-amd64 ./cmd/etiquetta
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/etiquetta-darwin-arm64 ./cmd/etiquetta
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/etiquetta-linux-amd64 ./cmd/etiquetta
+	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/etiquetta-linux-arm64 ./cmd/etiquetta
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/etiquetta-darwin-amd64 ./cmd/etiquetta
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/etiquetta-darwin-arm64 ./cmd/etiquetta
 	@echo "Release binaries created in dist/"
 
 # Show help

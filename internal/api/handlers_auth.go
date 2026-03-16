@@ -11,7 +11,10 @@ import (
 // CheckSetup returns whether initial setup is complete
 func (h *Handlers) CheckSetup(w http.ResponseWriter, r *http.Request) {
 	var count int
-	h.db.Conn().QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&count)
+	if err := h.db.Conn().QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to check setup status")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"setup_complete": count > 0,
@@ -179,6 +182,48 @@ func (h *Handlers) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "User not found")
 		return
 	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"user": user})
+}
+
+// UpdateProfile lets the authenticated user update their own name
+func (h *Handlers) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "Not authenticated")
+		return
+	}
+
+	var input struct {
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	_, err := h.db.Conn().Exec(
+		"UPDATE users SET name = ?, updated_at = ? WHERE id = ?",
+		input.Name, now, claims.UserID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update profile")
+		return
+	}
+
+	// Return updated user
+	var user struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Role  string `json:"role"`
+	}
+	h.db.Conn().QueryRow(
+		"SELECT id, email, name, role FROM users WHERE id = ?",
+		claims.UserID,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"user": user})
 }

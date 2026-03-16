@@ -27,7 +27,7 @@ export function VersionHistory({ open, onOpenChange, containerId }: VersionHisto
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="sm:max-w-md w-full overflow-y-auto">
+      <SheetContent side="right" className="sm:max-w-md w-full overflow-y-auto px-4">
         <SheetHeader>
           <SheetTitle>Version History</SheetTitle>
           <SheetDescription>

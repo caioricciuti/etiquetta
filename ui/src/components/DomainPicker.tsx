@@ -96,7 +96,7 @@ export function DomainPicker() {
                 <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted shrink-0">
                   <Globe className="h-4 w-4 text-muted-foreground" />
                 </div>
-                <span className="font-medium">All Domains</span>
+                <span className="font-medium text-muted-foreground">Select Domain</span>
               </>
             )}
           </span>
@@ -108,16 +108,6 @@ export function DomainPicker() {
           <CommandInput placeholder="Search domains..." />
           <CommandList>
             <CommandEmpty>No domains found.</CommandEmpty>
-            <CommandGroup>
-              <CommandItem value="all-domains" onSelect={() => handleSelect(null)} className="py-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted shrink-0">
-                  <Globe className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <span className="font-medium">All Domains</span>
-                {!selectedDomain && <Check className="ml-auto h-4 w-4 text-primary" />}
-              </CommandItem>
-            </CommandGroup>
-            <CommandSeparator />
             <CommandGroup heading="Your Domains">
               {domains.map((domain) => (
                 <CommandItem key={domain.id} value={`${domain.name} ${domain.domain}`} onSelect={() => handleSelect(domain.id)} className="py-2">

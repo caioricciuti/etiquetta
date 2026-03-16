@@ -1,3 +1,4 @@
+import { useRealtime } from '@/hooks/useRealtime'
 import {
   DashboardHeader,
   FilterBar,
@@ -17,6 +18,8 @@ import {
 } from './index'
 
 export function Dashboard() {
+  useRealtime()
+
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full">
       <DashboardHeader />

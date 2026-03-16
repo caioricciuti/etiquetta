@@ -6,7 +6,6 @@ import { fetchAPI } from './lib/api'
 import { queryClient } from './lib/query-client'
 import { AuthProvider, useAuth } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './components/theme/theme-provider'
-import { useRealtime } from './hooks/useRealtime'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { LicenseSettings } from './components/LicenseSettings'
 import {
@@ -375,8 +374,6 @@ function AppSidebar() {
 }
 
 function AppLayout() {
-  useRealtime()
-
   return (
     <SidebarProvider>
       <AppSidebar />

@@ -18,7 +18,11 @@ export default defineConfig({
         target: 'http://localhost:3456',
         changeOrigin: true,
       },
-      '/s': {
+      '/s.js': {
+        target: 'http://localhost:3456',
+        changeOrigin: true,
+      },
+      '/s/': {
         target: 'http://localhost:3456',
         changeOrigin: true,
       },

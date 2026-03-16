@@ -2,6 +2,8 @@ package bot
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 )
@@ -67,124 +69,246 @@ func (b *BatchAnalyzer) analyze() {
 	}
 }
 
-// analyzeZeroInteraction detects sessions with no interaction
-// Pattern: No scroll/mouse/click, single pageview, <1s duration
-func (b *BatchAnalyzer) analyzeZeroInteraction(since time.Time) int {
-	query := `
-		UPDATE events
-		SET bot_score = MIN(bot_score + 25, 100),
-			bot_signals = json_insert(bot_signals, '$[#]', json('{"name":"zero_interaction","weight":25}')),
-			bot_category = CASE
-				WHEN bot_score + 25 > 50 THEN 'bad_bot'
-				WHEN bot_score + 25 > 20 THEN 'suspicious'
-				ELSE bot_category
-			END
-		WHERE session_id IN (
-			SELECT session_id
-			FROM events
-			WHERE timestamp >= ?
-			GROUP BY session_id
-			HAVING
-				SUM(has_scroll) = 0
-				AND SUM(has_mouse_move) = 0
-				AND SUM(has_click) = 0
-				AND COUNT(*) = 1
-				AND SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) = 1
-				AND COALESCE(MAX(page_duration), 0) < 1000
-		)
-		AND bot_score < 75
-		AND bot_category != 'good_bot'
-		AND bot_signals NOT LIKE '%zero_interaction%'
-	`
+// appendSignal appends a bot signal to a JSON array string in Go.
+func appendSignal(existing string, signalName string, weight int) string {
+	var signals []map[string]interface{}
+	if err := json.Unmarshal([]byte(existing), &signals); err != nil {
+		signals = []map[string]interface{}{}
+	}
+	signals = append(signals, map[string]interface{}{
+		"name":   signalName,
+		"weight": weight,
+	})
+	out, _ := json.Marshal(signals)
+	return string(out)
+}
 
-	result, err := b.db.Exec(query, since.UnixMilli())
+// analyzeZeroInteraction detects sessions with no interaction
+func (b *BatchAnalyzer) analyzeZeroInteraction(since time.Time) int {
+	// Find session IDs matching the pattern
+	rows, err := b.db.Query(`
+		SELECT session_id
+		FROM events
+		WHERE timestamp >= ?
+		GROUP BY session_id
+		HAVING
+			SUM(has_scroll) = 0
+			AND SUM(has_mouse_move) = 0
+			AND SUM(has_click) = 0
+			AND COUNT(*) = 1
+			AND SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) = 1
+			AND COALESCE(MAX(page_duration), 0) < 1000
+	`, since.UnixMilli())
 	if err != nil {
 		log.Printf("Zero interaction analysis error: %v", err)
 		return 0
 	}
+	defer rows.Close()
 
-	affected, _ := result.RowsAffected()
-	return int(affected)
+	var sessionIDs []string
+	for rows.Next() {
+		var sid string
+		rows.Scan(&sid)
+		sessionIDs = append(sessionIDs, sid)
+	}
+
+	if len(sessionIDs) == 0 {
+		return 0
+	}
+
+	// Update matching events in Go
+	count := 0
+	for _, sid := range sessionIDs {
+		// Get current values
+		var botScore int
+		var botSignals, botCategory string
+		err := b.db.QueryRow(
+			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%zero_interaction%' LIMIT 1",
+			sid,
+		).Scan(&botScore, &botSignals, &botCategory)
+		if err != nil {
+			continue
+		}
+
+		newScore := botScore + 25
+		if newScore > 100 {
+			newScore = 100
+		}
+		newSignals := appendSignal(botSignals, "zero_interaction", 25)
+		newCategory := botCategory
+		if newScore > 50 {
+			newCategory = "bad_bot"
+		} else if newScore > 20 {
+			newCategory = "suspicious"
+		}
+
+		result, err := b.db.Exec(
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%zero_interaction%'",
+			newScore, newSignals, newCategory, sid,
+		)
+		if err != nil {
+			continue
+		}
+		affected, _ := result.RowsAffected()
+		count += int(affected)
+	}
+
+	return count
 }
 
 // analyzeImpossibleSpeed detects sessions with inhuman speed
-// Pattern: >50 pageviews in 10 seconds
 func (b *BatchAnalyzer) analyzeImpossibleSpeed(since time.Time) int {
-	query := `
-		UPDATE events
-		SET bot_score = MIN(bot_score + 30, 100),
-			bot_signals = json_insert(bot_signals, '$[#]', json('{"name":"impossible_speed","weight":30}')),
-			bot_category = 'bad_bot'
-		WHERE session_id IN (
-			SELECT session_id
-			FROM events
-			WHERE timestamp >= ?
-				AND event_type = 'pageview'
-			GROUP BY session_id
-			HAVING
-				COUNT(*) > 50
-				AND (MAX(timestamp) - MIN(timestamp)) < 10000
-		)
-		AND bot_category != 'good_bot'
-		AND bot_signals NOT LIKE '%impossible_speed%'
-	`
-
-	result, err := b.db.Exec(query, since.UnixMilli())
+	rows, err := b.db.Query(`
+		SELECT session_id
+		FROM events
+		WHERE timestamp >= ?
+			AND event_type = 'pageview'
+		GROUP BY session_id
+		HAVING
+			COUNT(*) > 50
+			AND (MAX(timestamp) - MIN(timestamp)) < 10000
+	`, since.UnixMilli())
 	if err != nil {
 		log.Printf("Impossible speed analysis error: %v", err)
 		return 0
 	}
+	defer rows.Close()
 
-	affected, _ := result.RowsAffected()
-	return int(affected)
+	var sessionIDs []string
+	for rows.Next() {
+		var sid string
+		rows.Scan(&sid)
+		sessionIDs = append(sessionIDs, sid)
+	}
+
+	count := 0
+	for _, sid := range sessionIDs {
+		var botScore int
+		var botSignals string
+		err := b.db.QueryRow(
+			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%impossible_speed%' LIMIT 1",
+			sid,
+		).Scan(&botScore, &botSignals)
+		if err != nil {
+			continue
+		}
+
+		newScore := botScore + 30
+		if newScore > 100 {
+			newScore = 100
+		}
+		newSignals := appendSignal(botSignals, "impossible_speed", 30)
+
+		result, err := b.db.Exec(
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = 'bad_bot' WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%impossible_speed%'",
+			newScore, newSignals, sid,
+		)
+		if err != nil {
+			continue
+		}
+		affected, _ := result.RowsAffected()
+		count += int(affected)
+	}
+
+	return count
 }
 
 // analyzePerfectTiming detects sessions with robotic click patterns
-// Pattern: Click intervals with <50ms variance (not easily detectable with SQLite)
-// This is a simplified version that looks for suspiciously regular timing
 func (b *BatchAnalyzer) analyzePerfectTiming(since time.Time) int {
-	// SQLite doesn't have great support for variance calculation
-	// We'll use a simpler heuristic: sessions with many clicks but very short total time
-	query := `
-		UPDATE events
-		SET bot_score = MIN(bot_score + 20, 100),
-			bot_signals = json_insert(bot_signals, '$[#]', json('{"name":"perfect_timing","weight":20}')),
-			bot_category = CASE
-				WHEN bot_score + 20 > 50 THEN 'bad_bot'
-				ELSE 'suspicious'
-			END
-		WHERE session_id IN (
-			SELECT e.session_id
-			FROM events e
-			WHERE e.timestamp >= ?
-				AND e.event_type = 'click'
-			GROUP BY e.session_id
-			HAVING
-				COUNT(*) >= 10
-				AND (MAX(e.timestamp) - MIN(e.timestamp)) / COUNT(*) < 100
-		)
-		AND bot_category != 'good_bot'
-		AND bot_signals NOT LIKE '%perfect_timing%'
-	`
-
-	result, err := b.db.Exec(query, since.UnixMilli())
+	rows, err := b.db.Query(`
+		SELECT e.session_id
+		FROM events e
+		WHERE e.timestamp >= ?
+			AND e.event_type = 'click'
+		GROUP BY e.session_id
+		HAVING
+			COUNT(*) >= 10
+			AND (MAX(e.timestamp) - MIN(e.timestamp)) / COUNT(*) < 100
+	`, since.UnixMilli())
 	if err != nil {
 		log.Printf("Perfect timing analysis error: %v", err)
 		return 0
 	}
+	defer rows.Close()
 
-	affected, _ := result.RowsAffected()
-	return int(affected)
+	var sessionIDs []string
+	for rows.Next() {
+		var sid string
+		rows.Scan(&sid)
+		sessionIDs = append(sessionIDs, sid)
+	}
+
+	count := 0
+	for _, sid := range sessionIDs {
+		var botScore int
+		var botSignals string
+		err := b.db.QueryRow(
+			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%perfect_timing%' LIMIT 1",
+			sid,
+		).Scan(&botScore, &botSignals)
+		if err != nil {
+			continue
+		}
+
+		newScore := botScore + 20
+		if newScore > 100 {
+			newScore = 100
+		}
+		newSignals := appendSignal(botSignals, "perfect_timing", 20)
+		newCategory := "suspicious"
+		if newScore > 50 {
+			newCategory = "bad_bot"
+		}
+
+		result, err := b.db.Exec(
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%perfect_timing%'",
+			newScore, newSignals, newCategory, sid,
+		)
+		if err != nil {
+			continue
+		}
+		affected, _ := result.RowsAffected()
+		count += int(affected)
+	}
+
+	return count
 }
 
-// MaterializeSessions creates/updates the visitor_sessions table
+// MaterializeSessions creates/updates the visitor_sessions table.
+// Uses DELETE + INSERT instead of ON CONFLICT because DuckDB does not allow
+// updating columns referenced by an index via ON CONFLICT.
 func (b *BatchAnalyzer) MaterializeSessions(since time.Time) error {
-	query := `
-		INSERT OR REPLACE INTO visitor_sessions (
+	sinceMs := since.UnixMilli()
+
+	// Delete existing sessions that will be recomputed
+	_, err := b.db.Exec(`
+		DELETE FROM visitor_sessions
+		WHERE id IN (
+			SELECT DISTINCT session_id || '_' || domain
+			FROM events
+			WHERE timestamp >= ?
+		)
+	`, sinceMs)
+	if err != nil {
+		return fmt.Errorf("delete existing sessions: %w", err)
+	}
+
+	// Insert fresh session data
+	_, err = b.db.Exec(`
+		INSERT INTO visitor_sessions (
 			id, session_id, visitor_hash, domain,
 			start_time, end_time, duration, pageviews,
 			entry_url, exit_url, is_bounce,
 			bot_score, bot_category
+		)
+		WITH session_data AS (
+			SELECT
+				session_id, domain, visitor_hash, timestamp, url,
+				event_type, bot_score, bot_category,
+				FIRST_VALUE(url) OVER (PARTITION BY session_id, domain ORDER BY timestamp) as entry_url,
+				LAST_VALUE(url) OVER (PARTITION BY session_id, domain ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as exit_url
+			FROM events
+			WHERE timestamp >= ?
 		)
 		SELECT
 			session_id || '_' || domain as id,
@@ -195,16 +319,17 @@ func (b *BatchAnalyzer) MaterializeSessions(since time.Time) error {
 			MAX(timestamp) as end_time,
 			MAX(timestamp) - MIN(timestamp) as duration,
 			SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) as pageviews,
-			(SELECT url FROM events e2 WHERE e2.session_id = e.session_id AND e2.domain = e.domain ORDER BY timestamp ASC LIMIT 1) as entry_url,
-			(SELECT url FROM events e3 WHERE e3.session_id = e.session_id AND e3.domain = e.domain ORDER BY timestamp DESC LIMIT 1) as exit_url,
+			ANY_VALUE(entry_url) as entry_url,
+			ANY_VALUE(exit_url) as exit_url,
 			CASE WHEN SUM(CASE WHEN event_type = 'pageview' THEN 1 ELSE 0 END) = 1 THEN 1 ELSE 0 END as is_bounce,
 			MAX(bot_score) as bot_score,
 			MAX(bot_category) as bot_category
-		FROM events e
-		WHERE timestamp >= ?
+		FROM session_data
 		GROUP BY session_id, domain
-	`
+	`, sinceMs)
+	if err != nil {
+		return fmt.Errorf("insert sessions: %w", err)
+	}
 
-	_, err := b.db.Exec(query, since.UnixMilli())
-	return err
+	return nil
 }

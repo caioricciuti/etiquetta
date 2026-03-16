@@ -95,7 +95,7 @@ func (h *Handlers) queryOverviewStats(ctx context.Context, f statsFilter) map[st
 
 	h.db.Conn().QueryRowContext(ctx, `
 		SELECT COALESCE(
-			CAST(SUM(CASE WHEN pv_count = 1 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(*), 0) * 100,
+			CAST(SUM(CASE WHEN pv_count = 1 THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) * 100,
 			0
 		) FROM (
 			SELECT session_id, COUNT(*) as pv_count
@@ -108,7 +108,7 @@ func (h *Handlers) queryOverviewStats(ctx context.Context, f statsFilter) map[st
 	w3, a3 := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'engagement'", f.startMs, f.endMs)
 	h.db.Conn().QueryRowContext(ctx, `
 		SELECT COALESCE(AVG(
-			CAST(json_extract(props, '$.visible_time_ms') AS INTEGER)
+			CAST(json_extract_string(props, '$.visible_time_ms') AS INTEGER)
 		), 0) / 1000.0
 		FROM events
 		WHERE `+w3,
@@ -160,7 +160,7 @@ func (h *Handlers) GetStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Conn().QueryContext(ctx, `
 		SELECT
-			date(timestamp / 1000, 'unixepoch') as period,
+			strftime('%Y-%m-%d', to_timestamp(timestamp / 1000)::TIMESTAMP) as period,
 			COUNT(*) as pageviews,
 			COUNT(DISTINCT visitor_hash) as visitors
 		FROM events
@@ -234,17 +234,9 @@ func (h *Handlers) GetStatsReferrers(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			CASE
 				WHEN referrer_url IS NULL OR referrer_url = '' THEN 'Direct / None'
-				ELSE REPLACE(
-					SUBSTR(referrer_url,
-						INSTR(referrer_url, '://') + 3,
-						CASE
-							WHEN INSTR(SUBSTR(referrer_url, INSTR(referrer_url, '://') + 3), '/') > 0
-							THEN INSTR(SUBSTR(referrer_url, INSTR(referrer_url, '://') + 3), '/') - 1
-							ELSE LENGTH(referrer_url)
-						END
-					), 'www.', '')
+				ELSE replace(regexp_extract(referrer_url, '://([^/]+)', 1), 'www.', '')
 			END as source,
-			COALESCE(NULLIF(referrer_type, ''), 'direct') as referrer_type,
+			ANY_VALUE(COALESCE(NULLIF(referrer_type, ''), 'direct')) as referrer_type,
 			COUNT(*) as visits,
 			COUNT(DISTINCT visitor_hash) as visitors
 		FROM events
@@ -513,7 +505,7 @@ func (h *Handlers) GetStatsOutbound(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Conn().QueryContext(ctx, `
 		SELECT
-			json_extract(props, '$.target') as target,
+			json_extract_string(props, '$.target') as target,
 			COUNT(*) as clicks,
 			COUNT(DISTINCT visitor_hash) as visitors
 		FROM events
@@ -656,7 +648,7 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 	if domain != "" {
 		timeRows, err = h.db.Conn().QueryContext(ctx, `
 			SELECT
-				date(timestamp / 1000, 'unixepoch') as period,
+				strftime('%Y-%m-%d', to_timestamp(timestamp / 1000)::TIMESTAMP) as period,
 				SUM(CASE WHEN bot_category = 'human' THEN 1 ELSE 0 END) as humans,
 				SUM(CASE WHEN bot_category = 'suspicious' THEN 1 ELSE 0 END) as suspicious,
 				SUM(CASE WHEN bot_category = 'bad_bot' THEN 1 ELSE 0 END) as bad_bots,
@@ -669,7 +661,7 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 	} else {
 		timeRows, err = h.db.Conn().QueryContext(ctx, `
 			SELECT
-				date(timestamp / 1000, 'unixepoch') as period,
+				strftime('%Y-%m-%d', to_timestamp(timestamp / 1000)::TIMESTAMP) as period,
 				SUM(CASE WHEN bot_category = 'human' THEN 1 ELSE 0 END) as humans,
 				SUM(CASE WHEN bot_category = 'suspicious' THEN 1 ELSE 0 END) as suspicious,
 				SUM(CASE WHEN bot_category = 'bad_bot' THEN 1 ELSE 0 END) as bad_bots,
@@ -708,7 +700,7 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 				COALESCE(browser_name, 'Unknown') as browser_name,
 				bot_category,
 				bot_score,
-				bot_signals,
+				ANY_VALUE(bot_signals) as bot_signals,
 				COUNT(*) as hits,
 				COUNT(DISTINCT visitor_hash) as visitors,
 				COUNT(DISTINCT session_id) as sessions,
@@ -725,7 +717,7 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 				COALESCE(browser_name, 'Unknown') as browser_name,
 				bot_category,
 				bot_score,
-				bot_signals,
+				ANY_VALUE(bot_signals) as bot_signals,
 				COUNT(*) as hits,
 				COUNT(DISTINCT visitor_hash) as visitors,
 				COUNT(DISTINCT session_id) as sessions,

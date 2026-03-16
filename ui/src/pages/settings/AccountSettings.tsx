@@ -4,10 +4,40 @@ import { fetchAPI } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Pencil, Loader2, Check, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { SettingsLayout } from './SettingsLayout'
 
 export function AccountSettings() {
-  const { user } = useAuth()
+  const { user, refresh } = useAuth()
+  const [editingName, setEditingName] = useState(false)
+  const [name, setName] = useState(user?.name || '')
+  const [saving, setSaving] = useState(false)
+
+  async function handleSaveName() {
+    setSaving(true)
+    try {
+      await fetchAPI('/api/auth/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      await refresh()
+      setEditingName(false)
+      toast.success('Name updated')
+    } catch (err) {
+      toast.error('Failed to update name', {
+        description: err instanceof Error ? err.message : undefined,
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function cancelEdit() {
+    setName(user?.name || '')
+    setEditingName(false)
+  }
 
   return (
     <SettingsLayout title="Account" description="Manage your account settings">
@@ -22,7 +52,46 @@ export function AccountSettings() {
           </div>
           <div>
             <label className="text-sm font-medium">Name</label>
-            <p className="text-muted-foreground">{user?.name || 'Not set'}</p>
+            {editingName ? (
+              <div className="flex items-center gap-2 mt-1">
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  className="max-w-xs"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveName()
+                    if (e.key === 'Escape') cancelEdit()
+                  }}
+                />
+                <Button size="sm" onClick={handleSaveName} disabled={saving}>
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={cancelEdit} disabled={saving}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <p className="text-muted-foreground">{user?.name || 'Not set'}</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0"
+                  onClick={() => {
+                    setName(user?.name || '')
+                    setEditingName(true)
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium">Role</label>

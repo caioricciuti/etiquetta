@@ -127,7 +127,7 @@ func (s *Service) Set(key, value string) error {
 
 	now := time.Now().UnixMilli()
 	_, err := s.db.Exec(
-		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+		"INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
 		key, storedValue, now,
 	)
 	if err != nil {
@@ -151,7 +151,7 @@ func (s *Service) SetMany(settings map[string]string) error {
 	defer tx.Rollback()
 
 	now := time.Now().UnixMilli()
-	stmt, err := tx.Prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at")
 	if err != nil {
 		return err
 	}

@@ -60,6 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const isSetup = await checkSetup()
     if (isSetup) {
       await fetchUser()
+    } else {
+      // Still try to fetch user — setup check may have failed transiently
+      const hasUser = await fetchUser()
+      if (hasUser) {
+        setSetupRequired(false)
+      }
     }
     setLoading(false)
   }, [checkSetup, fetchUser])
@@ -83,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const data = await response.json()
     setUser(data.user)
+    setSetupRequired(false)
   }, [])
 
   const logout = useCallback(async () => {

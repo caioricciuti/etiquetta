@@ -50,7 +50,7 @@ func runInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Check if database already exists
-	dbPath := dataDir + "/etiquetta.db"
+	dbPath := dataDir + "/etiquetta.duckdb"
 	dbExists := false
 	if _, err := os.Stat(dbPath); err == nil {
 		dbExists = true

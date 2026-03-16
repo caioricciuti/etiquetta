@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/marcboeker/go-duckdb"
 )
 
 type DB struct {
 	conn *sql.DB
-	mu   sync.RWMutex
 }
 
 // Event represents a tracking event
@@ -107,36 +105,14 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// Enable WAL mode and other optimizations via connection string
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=10000&_cache_size=-20000", path)
-
-	conn, err := sql.Open("sqlite", dsn)
+	conn, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Single connection serializes all writes — database/sql blocks goroutines
-	// waiting for a connection, preventing SQLITE_BUSY entirely.
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(0)
-
 	// Test connection
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	// Ensure PRAGMAs are applied (DSN _-prefixed params may not be parsed by modernc.org/sqlite)
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA busy_timeout=10000",
-		"PRAGMA cache_size=-20000",
-	}
-	for _, p := range pragmas {
-		if _, err := conn.Exec(p); err != nil {
-			return nil, fmt.Errorf("failed to set %s: %w", p, err)
-		}
 	}
 
 	return &DB{conn: conn}, nil
@@ -148,197 +124,6 @@ func (db *DB) Close() error {
 
 func (db *DB) Conn() *sql.DB {
 	return db.conn
-}
-
-// InsertEvent inserts a tracking event
-func (db *DB) InsertEvent(e *Event) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	props := "{}"
-	if e.Props != nil {
-		props = string(e.Props)
-	}
-
-	botSignals := "[]"
-	if e.BotSignals != "" {
-		botSignals = e.BotSignals
-	}
-
-	botCategory := "human"
-	if e.BotCategory != "" {
-		botCategory = e.BotCategory
-	}
-
-	_, err := db.conn.Exec(`
-		INSERT INTO events (
-			id, timestamp, event_type, event_name, session_id, visitor_hash,
-			domain, url, path, page_title, referrer_url, referrer_type,
-			utm_source, utm_medium, utm_campaign,
-			geo_country, geo_city, geo_region, geo_latitude, geo_longitude,
-			browser_name, os_name, device_type, is_bot, props,
-			bot_score, bot_signals, bot_category,
-			has_scroll, has_mouse_move, has_click, has_touch,
-			click_x, click_y, page_duration, datacenter_ip, ip_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		e.ID, e.Timestamp.UnixMilli(), e.EventType, e.EventName, e.SessionID, e.VisitorHash,
-		e.Domain, e.URL, e.Path, e.PageTitle, e.ReferrerURL, e.ReferrerType,
-		e.UTMSource, e.UTMMedium, e.UTMCampaign,
-		e.GeoCountry, e.GeoCity, e.GeoRegion, e.GeoLatitude, e.GeoLongitude,
-		e.BrowserName, e.OSName, e.DeviceType, e.IsBot, props,
-		e.BotScore, botSignals, botCategory,
-		e.HasScroll, e.HasMouseMove, e.HasClick, e.HasTouch,
-		e.ClickX, e.ClickY, e.PageDuration, e.DatacenterIP, e.IPHash,
-	)
-	return err
-}
-
-// InsertPerformance inserts web vitals data
-func (db *DB) InsertPerformance(p *Performance) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	_, err := db.conn.Exec(`
-		INSERT INTO performance (
-			id, timestamp, session_id, visitor_hash, domain, url, path,
-			lcp, cls, fcp, ttfb, inp, page_load_time,
-			device_type, connection_type, geo_country
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		p.ID, p.Timestamp.UnixMilli(), p.SessionID, p.VisitorHash, p.Domain, p.URL, p.Path,
-		p.LCP, p.CLS, p.FCP, p.TTFB, p.INP, p.PageLoadTime,
-		p.DeviceType, p.ConnectionType, p.GeoCountry,
-	)
-	return err
-}
-
-// InsertError inserts a JS error
-func (db *DB) InsertError(e *Error) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	_, err := db.conn.Exec(`
-		INSERT INTO errors (
-			id, timestamp, session_id, visitor_hash, domain, url, path,
-			error_type, error_message, error_stack, error_hash,
-			script_url, line_number, column_number, browser_name, geo_country
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		e.ID, e.Timestamp.UnixMilli(), e.SessionID, e.VisitorHash, e.Domain, e.URL, e.Path,
-		e.ErrorType, e.ErrorMessage, e.ErrorStack, e.ErrorHash,
-		e.ScriptURL, e.LineNumber, e.ColumnNumber, e.BrowserName, e.GeoCountry,
-	)
-	return err
-}
-
-// InsertBatch inserts multiple events in a transaction
-func (db *DB) InsertBatch(events []*Event, perfs []*Performance, errs []*Error) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Prepare statements
-	eventStmt, err := tx.Prepare(`
-		INSERT INTO events (
-			id, timestamp, event_type, event_name, session_id, visitor_hash,
-			domain, url, path, page_title, referrer_url, referrer_type,
-			utm_source, utm_medium, utm_campaign,
-			geo_country, geo_city, geo_region, geo_latitude, geo_longitude,
-			browser_name, os_name, device_type, is_bot, props,
-			bot_score, bot_signals, bot_category,
-			has_scroll, has_mouse_move, has_click, has_touch,
-			click_x, click_y, page_duration, datacenter_ip, ip_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer eventStmt.Close()
-
-	perfStmt, err := tx.Prepare(`
-		INSERT INTO performance (
-			id, timestamp, session_id, visitor_hash, domain, url, path,
-			lcp, cls, fcp, ttfb, inp, page_load_time,
-			device_type, connection_type, geo_country
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer perfStmt.Close()
-
-	errStmt, err := tx.Prepare(`
-		INSERT INTO errors (
-			id, timestamp, session_id, visitor_hash, domain, url, path,
-			error_type, error_message, error_stack, error_hash,
-			script_url, line_number, column_number, browser_name, geo_country
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer errStmt.Close()
-
-	// Insert events
-	for _, e := range events {
-		props := "{}"
-		if e.Props != nil {
-			props = string(e.Props)
-		}
-		botSignals := "[]"
-		if e.BotSignals != "" {
-			botSignals = e.BotSignals
-		}
-		botCategory := "human"
-		if e.BotCategory != "" {
-			botCategory = e.BotCategory
-		}
-		_, err := eventStmt.Exec(
-			e.ID, e.Timestamp.UnixMilli(), e.EventType, e.EventName, e.SessionID, e.VisitorHash,
-			e.Domain, e.URL, e.Path, e.PageTitle, e.ReferrerURL, e.ReferrerType,
-			e.UTMSource, e.UTMMedium, e.UTMCampaign,
-			e.GeoCountry, e.GeoCity, e.GeoRegion, e.GeoLatitude, e.GeoLongitude,
-			e.BrowserName, e.OSName, e.DeviceType, e.IsBot, props,
-			e.BotScore, botSignals, botCategory,
-			e.HasScroll, e.HasMouseMove, e.HasClick, e.HasTouch,
-			e.ClickX, e.ClickY, e.PageDuration, e.DatacenterIP, e.IPHash,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Insert performance
-	for _, p := range perfs {
-		_, err := perfStmt.Exec(
-			p.ID, p.Timestamp.UnixMilli(), p.SessionID, p.VisitorHash, p.Domain, p.URL, p.Path,
-			p.LCP, p.CLS, p.FCP, p.TTFB, p.INP, p.PageLoadTime,
-			p.DeviceType, p.ConnectionType, p.GeoCountry,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Insert errors
-	for _, e := range errs {
-		_, err := errStmt.Exec(
-			e.ID, e.Timestamp.UnixMilli(), e.SessionID, e.VisitorHash, e.Domain, e.URL, e.Path,
-			e.ErrorType, e.ErrorMessage, e.ErrorStack, e.ErrorHash,
-			e.ScriptURL, e.LineNumber, e.ColumnNumber, e.BrowserName, e.GeoCountry,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
 }
 
 // GetEventCount returns total event count
@@ -382,10 +167,6 @@ func (db *DB) LookupVisitorData(visitorHash string) (map[string]int64, error) {
 
 // EraseVisitorData deletes all data for a visitor hash across all tables (GDPR Art. 17)
 func (db *DB) EraseVisitorData(visitorHash string) (map[string]int64, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	// Count first so we can report what was deleted
 	counts := map[string]int64{}
 
 	tx, err := db.conn.Begin()
@@ -566,9 +347,6 @@ func (db *DB) QueryAuditLog(page, perPage int, action, resourceType string) ([]A
 
 // CleanupOldData removes data older than retentionDays
 func (db *DB) CleanupOldData(retentionDays int) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	cutoff := time.Now().AddDate(0, 0, -retentionDays).UnixMilli()
 
 	tx, err := db.conn.Begin()

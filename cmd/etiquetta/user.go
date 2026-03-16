@@ -55,7 +55,7 @@ func init() {
 }
 
 func runUserCreate(cmd *cobra.Command, args []string) {
-	db, err := database.New(dataDir + "/etiquetta.db")
+	db, err := database.New(dataDir + "/etiquetta.duckdb")
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -135,7 +135,7 @@ func runUserCreate(cmd *cobra.Command, args []string) {
 }
 
 func runUserList(cmd *cobra.Command, args []string) {
-	db, err := database.New(dataDir + "/etiquetta.db")
+	db, err := database.New(dataDir + "/etiquetta.duckdb")
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -172,7 +172,7 @@ func runUserList(cmd *cobra.Command, args []string) {
 func runUserDelete(cmd *cobra.Command, args []string) {
 	email := args[0]
 
-	db, err := database.New(dataDir + "/etiquetta.db")
+	db, err := database.New(dataDir + "/etiquetta.duckdb")
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
