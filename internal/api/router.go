@@ -15,6 +15,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/auth"
 	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
+	"github.com/caioricciuti/etiquetta/internal/connections"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/identification"
@@ -28,7 +29,7 @@ var trackerJS embed.FS
 var consentJS embed.FS
 
 // NewRouter creates the HTTP router
-func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager) http.Handler {
+func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -77,6 +78,8 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		cfg:            cfg,
 		auth:           authService,
 		bufferMgr:      bufferMgr,
+		connStore:      connStore,
+		syncManager:    syncManager,
 	}
 
 	// ========== Public endpoints ==========
@@ -176,6 +179,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/outbound", h.GetStatsOutbound)
 			r.Get("/stats/bots", h.GetStatsBots)                       // Bot traffic breakdown
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
+			r.Get("/stats/compare", h.GetStatsCompare)                   // Period comparison
 
 			// Domain management
 			r.Get("/domains", h.ListDomains)
@@ -256,6 +260,44 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Post("/tagmanager/containers/{cid}/variables", h.CreateVariable)
 				r.Put("/tagmanager/containers/{cid}/variables/{id}", h.UpdateVariable)
 				r.Delete("/tagmanager/containers/{cid}/variables/{id}", h.DeleteVariable)
+			})
+
+			// Connections (ad platform integrations)
+			r.Group(func(r chi.Router) {
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureConnections))
+				r.Get("/connections", h.ListConnections)
+				r.Post("/connections", h.CreateConnection)
+				r.Get("/connections/providers", h.GetProviders)
+				r.Get("/connections/{id}", h.GetConnection)
+				r.Put("/connections/{id}/tokens", h.UpdateConnectionToken)
+				r.Delete("/connections/{id}", h.DeleteConnection)
+				r.Post("/connections/{id}/sync", h.SyncConnection)
+				r.Get("/stats/ad-spend", h.GetAdSpend)
+				r.Get("/stats/ad-attribution", h.GetAdAttribution)
+			})
+
+			// Google Ads Settings (admin only)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Get("/settings/google-ads", h.GetGoogleAdsSettings)
+				r.Put("/settings/google-ads", h.UpdateGoogleAdsSettings)
+				r.Post("/settings/google-ads/test", h.TestGoogleAdsSettings)
+			})
+
+			// Meta Ads Settings (admin only)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Get("/settings/meta-ads", h.GetMetaAdsSettings)
+				r.Put("/settings/meta-ads", h.UpdateMetaAdsSettings)
+				r.Post("/settings/meta-ads/test", h.TestMetaAdsSettings)
+			})
+
+			// Microsoft Ads Settings (admin only)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Get("/settings/microsoft-ads", h.GetMicrosoftAdsSettings)
+				r.Put("/settings/microsoft-ads", h.UpdateMicrosoftAdsSettings)
+				r.Post("/settings/microsoft-ads/test", h.TestMicrosoftAdsSettings)
 			})
 
 			// Admin only - User management

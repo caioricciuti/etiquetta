@@ -15,6 +15,7 @@ import {
   CampaignsCard,
   CustomEventsCard,
   OutboundLinksCard,
+  AdSpendCard,
 } from './index'
 
 export function Dashboard() {
@@ -45,6 +46,7 @@ export function Dashboard() {
         <CustomEventsCard />
         <OutboundLinksCard />
       </div>
+      <AdSpendCard />
     </div>
   )
 }

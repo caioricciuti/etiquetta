@@ -16,6 +16,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/bot"
 	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
+	"github.com/caioricciuti/etiquetta/internal/connections"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/identification"
@@ -33,6 +34,8 @@ type Handlers struct {
 	cfg            *config.Config
 	auth           *auth.Auth
 	bufferMgr      *buffer.BufferManager
+	connStore      *connections.Store
+	syncManager    *connections.SyncManager
 
 	// SSE subscribers
 	sseClients map[chan []byte]bool

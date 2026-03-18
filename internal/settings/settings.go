@@ -18,11 +18,19 @@ import (
 
 // Sensitive keys that should be encrypted
 var sensitiveKeys = map[string]bool{
-	"secret_key":          true,
-	"maxmind_account_id":  true,
-	"maxmind_license_key": true,
-	"smtp_password":       true,
-	"resend_api_key":      true,
+	"secret_key":                true,
+	"maxmind_account_id":        true,
+	"maxmind_license_key":       true,
+	"smtp_password":             true,
+	"resend_api_key":            true,
+	"google_ads_client_id":      true,
+	"google_ads_client_secret":  true,
+	"google_ads_developer_token":    true,
+	"meta_ads_app_id":               true,
+	"meta_ads_app_secret":           true,
+	"microsoft_ads_client_id":       true,
+	"microsoft_ads_client_secret":   true,
+	"microsoft_ads_developer_token": true,
 }
 
 // Service manages application settings stored in the database

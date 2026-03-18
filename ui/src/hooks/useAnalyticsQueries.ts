@@ -4,6 +4,7 @@ import { useDateRangeStore } from '../stores/useDateRangeStore'
 import { useDomainStore } from '../stores/useDomainStore'
 import { useFilterStore } from '../stores/useFilterStore'
 import { useDomains } from './useDomains'
+import type { DateRange } from 'react-day-picker'
 import type {
   OverviewStats,
   TimeseriesPoint,
@@ -22,6 +23,11 @@ import type {
   FraudSummary,
   SourceQuality,
   AdFraudCampaign,
+  ComparisonResponse,
+  AdConnection,
+  AdProvider,
+  AdSpendPoint,
+  AdAttributionRow,
 } from '../lib/types'
 
 function useAnalyticsParams() {
@@ -187,6 +193,33 @@ export function useOutboundLinks() {
   })
 }
 
+// --- Period Comparison ---
+
+export function useComparison(
+  currentRange: DateRange | undefined,
+  compareRange: DateRange | undefined,
+  domain: string | undefined,
+) {
+  const params = new URLSearchParams()
+  if (currentRange?.from && currentRange?.to) {
+    params.set('start', currentRange.from.toISOString())
+    params.set('end', currentRange.to.toISOString())
+  }
+  if (compareRange?.from && compareRange?.to) {
+    params.set('compare_start', compareRange.from.toISOString())
+    params.set('compare_end', compareRange.to.toISOString())
+  }
+  if (domain) params.set('domain', domain)
+  const qs = params.toString()
+
+  return useQuery({
+    queryKey: ['stats', 'compare', qs],
+    queryFn: () => fetchAPI<ComparisonResponse>(`/api/stats/compare?${qs}`),
+    enabled: !!currentRange?.from && !!currentRange?.to,
+    placeholderData: keepPreviousData,
+  })
+}
+
 // --- Bot Analysis ---
 
 function useBotParams() {
@@ -265,5 +298,96 @@ export function useDeleteCampaign() {
     mutationFn: (id: string) =>
       fetchAPI<void>(`/api/campaigns/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+  })
+}
+
+// --- Ad Platform Connections ---
+
+export function useConnections() {
+  return useQuery({
+    queryKey: ['connections'],
+    queryFn: () => fetchAPI<AdConnection[]>('/api/connections'),
+    retry: false,
+    meta: { silent: true },
+  })
+}
+
+export function useProviders() {
+  return useQuery({
+    queryKey: ['connections', 'providers'],
+    queryFn: () => fetchAPI<AdProvider[]>('/api/connections/providers'),
+    staleTime: 60 * 60 * 1000,
+  })
+}
+
+export function useCreateConnection() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { provider: string; name: string; account_id?: string; refresh_token?: string; config?: Record<string, string> }) =>
+      fetchAPI<AdConnection>('/api/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
+  })
+}
+
+export function useDeleteConnection() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI<void>(`/api/connections/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
+  })
+}
+
+export function useSyncConnection() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI<void>(`/api/connections/${id}/sync`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connections'] })
+      qc.invalidateQueries({ queryKey: ['stats', 'ad-spend'] })
+      qc.invalidateQueries({ queryKey: ['stats', 'ad-attribution'] })
+    },
+  })
+}
+
+export function useUpdateConnectionToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, refresh_token }: { id: string; refresh_token: string }) =>
+      fetchAPI(`/api/connections/${id}/tokens`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
+  })
+}
+
+export function useAdSpend() {
+  const { qs, enabled } = useAnalyticsParams()
+  return useQuery({
+    queryKey: ['stats', 'ad-spend', qs],
+    queryFn: () => fetchAPI<AdSpendPoint[]>(`/api/stats/ad-spend?${qs}`),
+    enabled,
+    retry: false,
+    meta: { silent: true },
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useAdAttribution() {
+  const { qs, enabled } = useAnalyticsParams()
+  return useQuery({
+    queryKey: ['stats', 'ad-attribution', qs],
+    queryFn: () => fetchAPI<AdAttributionRow[]>(`/api/stats/ad-attribution?${qs}`),
+    enabled,
+    retry: false,
+    meta: { silent: true },
+    placeholderData: keepPreviousData,
   })
 }

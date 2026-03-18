@@ -23,6 +23,7 @@ const (
 	FeatureBotDetection  = "bot_detection"
 	FeatureConsent       = "consent"
 	FeatureTagManager    = "tag_manager"
+	FeatureConnections   = "connections"
 )
 
 // License represents a validated license
@@ -59,16 +60,19 @@ func DefaultLimits(tier string) map[string]int {
 		return map[string]int{
 			"max_users":          -1, // unlimited
 			"max_retention_days": -1, // unlimited
+			"max_connections":    -1, // unlimited
 		}
 	case TierPro:
 		return map[string]int{
 			"max_users":          10,
 			"max_retention_days": -1, // unlimited — user configurable
+			"max_connections":    -1, // unlimited
 		}
 	default: // community
 		return map[string]int{
 			"max_users":          3,
 			"max_retention_days": 180,
+			"max_connections":    1,
 		}
 	}
 }
@@ -90,6 +94,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true,
 			FeatureConsent:       true,
 			FeatureTagManager:    true,
+			FeatureConnections:   true,
 		}
 	case TierPro:
 		return map[string]bool{
@@ -105,6 +110,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true,
 			FeatureConsent:       true,
 			FeatureTagManager:    true,
+			FeatureConnections:   true,
 		}
 	default: // community
 		return map[string]bool{
@@ -120,6 +126,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true, // Basic bot detection available in community
 			FeatureConsent:       false,
 			FeatureTagManager:    false,
+			FeatureConnections:   true, // Available in community (limited to 1)
 		}
 	}
 }

@@ -15,6 +15,7 @@ import {
   AccountSettings,
   UsersSettings,
   TrackingSettings,
+  ConnectionsSettings,
 } from './pages/settings'
 import { ConsentDashboard, ConsentConfig } from './pages/consent'
 import { PrivacyCenter } from './pages/privacy'
@@ -22,6 +23,8 @@ import { TagManager, TagManagerContainer } from './pages/tag-manager'
 import { Explorer } from './pages/Explorer'
 import { Login } from './pages/Login'
 import { BotAnalysis } from './pages/BotAnalysis'
+import { Compare } from './pages/Compare'
+import { Connections } from './pages/Connections'
 import { AdFraud } from './pages/AdFraud'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
@@ -34,6 +37,7 @@ import {
   Sun,
   Monitor,
   Bot,
+  GitCompareArrows,
   ShieldAlert,
   Shield,
   Tags,
@@ -47,6 +51,7 @@ import {
   Database,
   Fingerprint,
   Activity,
+  Cable,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -239,8 +244,10 @@ function AppSidebar() {
 
   const navigation = [
     { path: '/', name: 'Dashboard', icon: BarChart3 },
+    { path: '/compare', name: 'Compare', icon: GitCompareArrows },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
     { path: '/consent', name: 'Consent', icon: Shield, pro: 'consent' },
+    { path: '/connections', name: 'Connections', icon: Cable, pro: 'connections' },
     { path: '/fraud', name: 'Ad Fraud', icon: ShieldAlert, pro: 'ad_fraud' },
     { path: '/privacy', name: 'Privacy Center', icon: Fingerprint, adminOnly: true },
     { path: '/explorer', name: 'Data Explorer', icon: Database, adminOnly: true },
@@ -252,6 +259,7 @@ function AppSidebar() {
     { path: '/settings/tracking', name: 'Tracking', icon: Activity, adminOnly: true },
     { path: '/settings/email', name: 'Email', icon: Mail, adminOnly: true },
     { path: '/settings/geoip', name: 'GeoIP', icon: MapPin, adminOnly: true },
+    { path: '/settings/connections', name: 'Connections', icon: Cable, adminOnly: true },
     { path: '/settings/account', name: 'Account', icon: User },
     { path: '/settings/users', name: 'Users', icon: UsersIcon, adminOnly: true, pro: 'multi_user' },
     { path: '/settings/license', name: 'License', icon: Key },
@@ -389,7 +397,9 @@ function AppLayout() {
           <div className="max-w-[1800px] mx-auto w-full h-full overflow-hidden">
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/compare" element={<Compare />} />
               <Route path="/bots" element={<BotAnalysis />} />
+              <Route path="/connections" element={<Connections />} />
               <Route path="/fraud" element={<AdFraud />} />
               <Route path="/explorer" element={<Explorer />} />
               {/* Settings routes */}
@@ -398,6 +408,7 @@ function AppLayout() {
               <Route path="/settings/tracking" element={<TrackingSettings />} />
               <Route path="/settings/email" element={<EmailSettings />} />
               <Route path="/settings/geoip" element={<GeoIPSettings />} />
+              <Route path="/settings/connections" element={<ConnectionsSettings />} />
               <Route path="/settings/account" element={<AccountSettings />} />
               <Route path="/settings/users" element={<UsersSettings />} />
               <Route path="/privacy" element={<PrivacyCenter />} />

@@ -469,6 +469,48 @@ func (db *DB) Migrate() error {
 				ON CONFLICT (key) DO NOTHING;
 			`,
 		},
+		{
+			version: 17,
+			sql: `
+				-- Ad platform connections (OAuth integrations)
+				CREATE TABLE IF NOT EXISTS ad_connections (
+					id VARCHAR PRIMARY KEY,
+					provider VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					account_id VARCHAR,
+					encrypted_tokens TEXT NOT NULL,
+					status VARCHAR DEFAULT 'active',
+					last_sync_at BIGINT,
+					last_error TEXT,
+					config TEXT DEFAULT '{}',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_ad_connections_provider ON ad_connections(provider);
+				CREATE INDEX IF NOT EXISTS idx_ad_connections_status ON ad_connections(status);
+
+				-- Daily campaign spend data from ad platforms
+				CREATE TABLE IF NOT EXISTS ad_spend_daily (
+					id VARCHAR PRIMARY KEY,
+					connection_id VARCHAR NOT NULL,
+					provider VARCHAR NOT NULL,
+					date VARCHAR NOT NULL,
+					campaign_id VARCHAR NOT NULL,
+					campaign_name VARCHAR,
+					cost_micros BIGINT NOT NULL DEFAULT 0,
+					impressions INTEGER DEFAULT 0,
+					clicks INTEGER DEFAULT 0,
+					currency VARCHAR DEFAULT 'USD',
+					created_at BIGINT NOT NULL
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_ad_spend_date ON ad_spend_daily(date, provider);
+				CREATE INDEX IF NOT EXISTS idx_ad_spend_campaign ON ad_spend_daily(campaign_id, date);
+				CREATE INDEX IF NOT EXISTS idx_ad_spend_connection ON ad_spend_daily(connection_id);
+			`,
+		},
 	}
 
 	for _, m := range migrations {

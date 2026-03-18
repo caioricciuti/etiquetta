@@ -423,10 +423,97 @@ export interface TMVariable {
   updated_at: number
 }
 
+// Period Comparison types
+export interface ComparisonPeriod {
+  start: number
+  end: number
+}
+
+export interface ComparisonInsight {
+  type: 'positive' | 'negative' | 'neutral'
+  metric: string
+  text: string
+}
+
+export interface ComparisonTimeseriesPoint {
+  day_index: number
+  date: string
+  pageviews: number
+  visitors: number
+}
+
+export interface ComparisonOverview {
+  total_events: number
+  unique_visitors: number
+  sessions: number
+  pageviews: number
+  bounce_rate: number
+  avg_session_seconds: number
+}
+
+export interface ComparisonResponse {
+  current_period: ComparisonPeriod
+  compare_period: ComparisonPeriod
+  overview: { current: ComparisonOverview; previous: ComparisonOverview }
+  timeseries: { current: ComparisonTimeseriesPoint[]; previous: ComparisonTimeseriesPoint[] }
+  pages: { current: TopPage[]; previous: TopPage[] }
+  referrers: { current: Referrer[]; previous: Referrer[] }
+  geo: { current: GeoData[]; previous: GeoData[] }
+  devices: { current: DeviceData[]; previous: DeviceData[] }
+  browsers: { current: BrowserData[]; previous: BrowserData[] }
+  campaigns: { current: Campaign[]; previous: Campaign[] }
+  events: { current: CustomEvent[]; previous: CustomEvent[] }
+  outbound: { current: OutboundLink[]; previous: OutboundLink[] }
+  insights: ComparisonInsight[]
+}
+
 export interface TMSnapshot {
   id: string
   container_id: string
   version: number
   published_by: string
   published_at: number
+}
+
+// Ad Platform Connections types
+export interface AdConnection {
+  id: string
+  provider: string
+  name: string
+  account_id: string
+  status: 'active' | 'pending' | 'error' | 'disconnected'
+  last_sync_at: number | null
+  last_error: string | null
+  config: Record<string, string>
+  created_by: string
+  created_at: number
+  updated_at: number
+}
+
+export interface AdProvider {
+  name: string
+  display_name: string
+  available: boolean
+}
+
+export interface AdSpendPoint {
+  date: string
+  provider: string
+  cost: number
+  impressions: number
+  clicks: number
+}
+
+export interface AdAttributionRow {
+  campaign: string
+  source: string
+  medium: string
+  visits: number
+  visitors: number
+  sessions: number
+  cost: number
+  impressions: number
+  ad_clicks: number
+  cpc: number
+  cpa: number
 }

@@ -19,6 +19,8 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/bot"
 	"github.com/caioricciuti/etiquetta/internal/buffer"
 	"github.com/caioricciuti/etiquetta/internal/config"
+	"github.com/caioricciuti/etiquetta/internal/connections"
+	"github.com/caioricciuti/etiquetta/internal/connections/providers"
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
@@ -122,6 +124,50 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	settingsSvc.SetMasterKey(secretKey)
 
+	// Wire Google Ads provider credentials from settings
+	if gads, ok := providers.Get("google_ads"); ok {
+		if g, ok := gads.(*providers.GoogleAds); ok {
+			g.GetCredentials = func() (string, string, string, error) {
+				clientID, _ := settingsSvc.Get("google_ads_client_id")
+				clientSecret, _ := settingsSvc.Get("google_ads_client_secret")
+				devToken, _ := settingsSvc.Get("google_ads_developer_token")
+				if clientID == "" || clientSecret == "" {
+					return "", "", "", fmt.Errorf("Google Ads credentials not configured")
+				}
+				return clientID, clientSecret, devToken, nil
+			}
+		}
+	}
+
+	// Wire Meta Ads provider credentials from settings
+	if mads, ok := providers.Get("meta_ads"); ok {
+		if m, ok := mads.(*providers.MetaAds); ok {
+			m.GetCredentials = func() (string, string, error) {
+				appID, _ := settingsSvc.Get("meta_ads_app_id")
+				appSecret, _ := settingsSvc.Get("meta_ads_app_secret")
+				if appID == "" || appSecret == "" {
+					return "", "", fmt.Errorf("Meta Ads credentials not configured")
+				}
+				return appID, appSecret, nil
+			}
+		}
+	}
+
+	// Wire Microsoft Ads provider credentials from settings
+	if msads, ok := providers.Get("microsoft_ads"); ok {
+		if ms, ok := msads.(*providers.MicrosoftAds); ok {
+			ms.GetCredentials = func() (string, string, string, error) {
+				clientID, _ := settingsSvc.Get("microsoft_ads_client_id")
+				clientSecret, _ := settingsSvc.Get("microsoft_ads_client_secret")
+				devToken, _ := settingsSvc.Get("microsoft_ads_developer_token")
+				if clientID == "" || clientSecret == "" {
+					return "", "", "", fmt.Errorf("Microsoft Ads credentials not configured")
+				}
+				return clientID, clientSecret, devToken, nil
+			}
+		}
+	}
+
 	// Load settings into config
 	geoipPath := settingsSvc.GetWithDefault("geoip_path", dataDir+"/GeoLite2-City.mmdb")
 	allowedOrigins := settingsSvc.GetWithDefault("allowed_origins", "*")
@@ -154,6 +200,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	compactCtx, compactCancel := context.WithCancel(context.Background())
 	compactor.StartSchedule(compactCtx, bufferCfg.CompactHour)
 
+	// Initialize connections store and sync manager
+	connStore := connections.NewStore(db, secretKey)
+	syncManager := connections.NewSyncManager(connStore, 1*time.Hour)
+	go syncManager.Start()
+
 	// Get embedded UI filesystem
 	uiDist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
@@ -161,7 +212,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create router
-	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr)
+	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager)
 
 	// Start data retention cleanup goroutine
 	go func() {
@@ -202,6 +253,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		// Stop background jobs
 		batchAnalyzer.Stop()
+		syncManager.Stop()
 		compactCancel()
 
 		// Flush all buffered data to DuckDB

@@ -85,11 +85,6 @@ const presets = [
   },
 ]
 
-function formatCompact(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`
-  return String(n)
-}
-
 interface DateRangePickerProps {
   dateRange: DateRange | undefined
   onDateRangeChange: (range: DateRange | undefined) => void
@@ -115,7 +110,7 @@ export function DateRangePicker({
   // Fetch heatmap data for displayed months
   const { data: heatmapData } = useCalendarHeatmap(displayedMonth, isOpen)
 
-  // Build lookup map and compute max for color scaling
+  // Build lookup map and compute max sessions for heatmap
   const { heatmapMap, maxSessions } = React.useMemo(() => {
     const map = new Map<string, number>()
     let max = 0
@@ -179,26 +174,40 @@ export function DateRangePicker({
   // Custom DayButton with heatmap overlay
   const HeatmapDayButton = React.useCallback(
     (props: React.ComponentProps<typeof DayButton>) => {
-      const { day, modifiers, ...rest } = props
+      const { day, modifiers, style: dayStyle, ...rest } = props
       const dateStr = format(day.date, "yyyy-MM-dd")
       const sessions = heatmapMap.get(dateStr)
       const isOutside = modifiers.outside
       const isSelected = modifiers.selected || modifiers.range_start || modifiers.range_end || modifiers.range_middle
 
       const showHeatmap = !isOutside && sessions && sessions > 0 && !isSelected && maxSessions > 0
-      const opacity = showHeatmap ? 0.08 + (sessions / maxSessions) * 0.27 : 0
+      const ratio = showHeatmap ? sessions / maxSessions : 0
+
+      let heatColor: string | undefined
+      if (showHeatmap) {
+        if (ratio > 0.66) heatColor = 'rgba(239, 68, 68, 0.3)'
+        else if (ratio > 0.33) heatColor = 'rgba(249, 115, 22, 0.25)'
+        else heatColor = 'rgba(251, 191, 36, 0.2)'
+      }
+
+      const mergedStyle = heatColor
+        ? {
+            ...dayStyle,
+            backgroundColor: heatColor,
+            borderRadius: '6px',
+            padding: '2px',
+            backgroundClip: 'content-box' as const,
+          }
+        : dayStyle
 
       return (
         <CalendarDayButton
           day={day}
           modifiers={modifiers}
-          style={showHeatmap ? { backgroundColor: `rgba(34, 197, 94, ${opacity})` } : undefined}
+          style={mergedStyle}
           {...rest}
         >
           {props.children}
-          {!isOutside && sessions && sessions > 0 ? (
-            <span>{formatCompact(sessions)}</span>
-          ) : null}
         </CalendarDayButton>
       )
     },
@@ -272,7 +281,7 @@ export function DateRangePicker({
 
         {/* Footer with apply button for custom ranges */}
         {selectedPreset === "custom" && (
-          <div className="border-t border-border p-3 flex justify-end gap-2">
+          <div className="border-t border-border p-3 flex justify-end">
             <Button
               variant="outline"
               size="sm"
