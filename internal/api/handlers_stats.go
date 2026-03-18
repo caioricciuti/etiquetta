@@ -497,6 +497,240 @@ func (h *Handlers) GetStatsCustomEvents(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+// GetStatsEventsSummary returns all events grouped by event_type + event_name
+func (h *Handlers) GetStatsEventsSummary(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	f := parseStatsFilter(r)
+
+	// Optional event_type filter
+	eventType := r.URL.Query().Get("event_type")
+
+	baseWhere := "timestamp >= ? AND timestamp <= ?"
+	baseArgs := []interface{}{f.startMs, f.endMs}
+
+	if eventType != "" {
+		baseWhere += " AND event_type = ?"
+		baseArgs = append(baseArgs, eventType)
+	}
+
+	where, args := f.where(baseWhere, baseArgs...)
+
+	// Current period
+	rows, err := h.db.Conn().QueryContext(ctx, `
+		SELECT
+			event_type,
+			COALESCE(event_name, '(unnamed)') as event_name,
+			COUNT(*) as count,
+			COUNT(DISTINCT visitor_hash) as unique_visitors,
+			COUNT(DISTINCT session_id) as sessions
+		FROM events
+		WHERE `+where+`
+		GROUP BY event_type, event_name
+		ORDER BY count DESC
+		LIMIT 100
+	`, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	events := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var evType, evName string
+		var count, visitors, sessions int64
+		rows.Scan(&evType, &evName, &count, &visitors, &sessions)
+		events = append(events, map[string]interface{}{
+			"event_type":      evType,
+			"event_name":      evName,
+			"count":           count,
+			"unique_visitors": visitors,
+			"sessions":        sessions,
+		})
+	}
+
+	// Previous period for trend
+	pf := f.prevPeriod()
+	prevWhere := "timestamp >= ? AND timestamp <= ?"
+	prevArgs := []interface{}{pf.startMs, pf.endMs}
+	if eventType != "" {
+		prevWhere += " AND event_type = ?"
+		prevArgs = append(prevArgs, eventType)
+	}
+	pw, pa := pf.where(prevWhere, prevArgs...)
+
+	var prevTotal int64
+	h.db.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM events WHERE "+pw, pa...).Scan(&prevTotal)
+
+	var currentTotal int64
+	for _, ev := range events {
+		currentTotal += ev["count"].(int64)
+	}
+
+	// Totals by event type
+	typeWhere, typeArgs := f.where("timestamp >= ? AND timestamp <= ?", f.startMs, f.endMs)
+	typeRows, err := h.db.Conn().QueryContext(ctx, `
+		SELECT event_type, COUNT(*) as count
+		FROM events
+		WHERE `+typeWhere+`
+		GROUP BY event_type
+		ORDER BY count DESC
+	`, typeArgs...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer typeRows.Close()
+
+	typeCounts := make([]map[string]interface{}, 0)
+	for typeRows.Next() {
+		var evType string
+		var count int64
+		typeRows.Scan(&evType, &count)
+		typeCounts = append(typeCounts, map[string]interface{}{
+			"event_type": evType,
+			"count":      count,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"events":       events,
+		"total":        currentTotal,
+		"prev_total":   prevTotal,
+		"type_counts":  typeCounts,
+	})
+}
+
+// GetStatsEventsTimeseries returns timeseries for a specific event or all events
+func (h *Handlers) GetStatsEventsTimeseries(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	f := parseStatsFilter(r)
+
+	eventName := r.URL.Query().Get("event_name")
+	eventType := r.URL.Query().Get("event_type")
+
+	baseWhere := "timestamp >= ? AND timestamp <= ?"
+	baseArgs := []interface{}{f.startMs, f.endMs}
+
+	if eventName != "" {
+		baseWhere += " AND event_name = ?"
+		baseArgs = append(baseArgs, eventName)
+	}
+	if eventType != "" {
+		baseWhere += " AND event_type = ?"
+		baseArgs = append(baseArgs, eventType)
+	}
+
+	where, args := f.where(baseWhere, baseArgs...)
+
+	rows, err := h.db.Conn().QueryContext(ctx, `
+		SELECT
+			strftime('%Y-%m-%d', to_timestamp(timestamp / 1000)::TIMESTAMP) as period,
+			COUNT(*) as count,
+			COUNT(DISTINCT visitor_hash) as visitors
+		FROM events
+		WHERE `+where+`
+		GROUP BY period
+		ORDER BY period
+	`, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var period string
+		var count, visitors int64
+		rows.Scan(&period, &count, &visitors)
+		result = append(result, map[string]interface{}{
+			"period":   period,
+			"count":    count,
+			"visitors": visitors,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetStatsEventsProps returns top property values for a given event name
+func (h *Handlers) GetStatsEventsProps(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	f := parseStatsFilter(r)
+
+	eventName := r.URL.Query().Get("event_name")
+	if eventName == "" {
+		writeError(w, http.StatusBadRequest, "event_name parameter required")
+		return
+	}
+
+	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_name = ? AND props IS NOT NULL AND props != '' AND props != '{}'",
+		f.startMs, f.endMs, eventName)
+
+	// Extract top property keys and values
+	rows, err := h.db.Conn().QueryContext(ctx, `
+		SELECT
+			unnest(json_keys(props::JSON)) as prop_key,
+			COUNT(*) as count
+		FROM events
+		WHERE `+where+`
+		GROUP BY prop_key
+		ORDER BY count DESC
+		LIMIT 20
+	`, args...)
+	if err != nil {
+		// If JSON parsing fails, return empty
+		writeJSON(w, http.StatusOK, map[string]interface{}{"properties": []interface{}{}})
+		return
+	}
+	defer rows.Close()
+
+	properties := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var key string
+		var count int64
+		rows.Scan(&key, &count)
+
+		// Get top values for this key
+		valWhere, valArgs := f.where("timestamp >= ? AND timestamp <= ? AND event_name = ? AND props IS NOT NULL",
+			f.startMs, f.endMs, eventName)
+		valRows, err := h.db.Conn().QueryContext(ctx, `
+			SELECT
+				json_extract_string(props, '$.' || ?) as val,
+				COUNT(*) as count
+			FROM events
+			WHERE `+valWhere+` AND json_extract_string(props, '$.' || ?) IS NOT NULL
+			GROUP BY val
+			ORDER BY count DESC
+			LIMIT 10
+		`, append([]interface{}{key}, append(valArgs, key)...)...)
+		if err != nil {
+			continue
+		}
+
+		values := make([]map[string]interface{}, 0)
+		for valRows.Next() {
+			var val string
+			var valCount int64
+			valRows.Scan(&val, &valCount)
+			values = append(values, map[string]interface{}{
+				"value": val,
+				"count": valCount,
+			})
+		}
+		valRows.Close()
+
+		properties = append(properties, map[string]interface{}{
+			"key":    key,
+			"count":  count,
+			"values": values,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"properties": properties})
+}
+
 // GetStatsOutbound returns outbound link clicks
 func (h *Handlers) GetStatsOutbound(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

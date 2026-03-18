@@ -208,8 +208,7 @@
     }
 
     var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs.js';
-    script.crossOrigin = 'anonymous';
+    script.src = BASE_URL + '/r/rrweb.min.js';
     script.onload = function() {
       log('rrweb loaded');
       callback();

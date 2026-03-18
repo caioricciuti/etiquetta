@@ -24,6 +24,7 @@ import { Migrate } from './pages/migrate'
 import { Explorer } from './pages/Explorer'
 import { Login } from './pages/Login'
 import { BotAnalysis } from './pages/BotAnalysis'
+import { Events } from './pages/Events'
 import { Compare } from './pages/Compare'
 import { Connections } from './pages/Connections'
 import { AdFraud } from './pages/AdFraud'
@@ -56,6 +57,7 @@ import {
   Cable,
   Import,
   Video,
+  Zap,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -249,6 +251,7 @@ function AppSidebar() {
   const navigation = [
     { path: '/', name: 'Dashboard', icon: BarChart3 },
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
+    { path: '/events', name: 'Events', icon: Zap },
     { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
     { path: '/consent', name: 'Consent', icon: Shield, pro: 'consent' },
@@ -404,6 +407,7 @@ function AppLayout() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/compare" element={<Compare />} />
+              <Route path="/events" element={<Events />} />
               <Route path="/bots" element={<BotAnalysis />} />
               <Route path="/replays" element={<ReplayList />} />
               <Route path="/replays/settings" element={<ReplaySettings />} />

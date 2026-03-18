@@ -28,11 +28,13 @@ dev:
 # Build UI with bun
 ui:
 	cd ui && bun install && bun run build
+	cp ui/node_modules/rrweb/dist/rrweb.umd.min.cjs internal/api/rrweb.min.js
 
 # Clean build artifacts
 clean:
 	rm -rf bin/
 	rm -rf ui/dist/
+	rm -f internal/api/rrweb.min.js
 
 # Run tests
 test:

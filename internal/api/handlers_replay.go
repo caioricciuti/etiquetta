@@ -378,6 +378,21 @@ func (h *Handlers) ServeRecorderScript(w http.ResponseWriter, r *http.Request) {
 	w.Write(script)
 }
 
+// ServeRrwebScript serves the self-hosted rrweb UMD bundle.
+// GET /r/rrweb.min.js (public)
+func (h *Handlers) ServeRrwebScript(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+
+	script, err := rrwebJS.ReadFile("rrweb.min.js")
+	if err != nil {
+		http.Error(w, "Script not found", http.StatusNotFound)
+		return
+	}
+
+	w.Write(script)
+}
+
 // ServeReplayConfig serves replay configuration for the tracker script.
 // GET /r/config (public)
 func (h *Handlers) ServeReplayConfig(w http.ResponseWriter, r *http.Request) {

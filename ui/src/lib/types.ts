@@ -85,6 +85,48 @@ export interface OutboundLink {
   unique_visitors: number
 }
 
+// Events page types
+export interface EventSummaryItem {
+  event_type: string
+  event_name: string
+  count: number
+  unique_visitors: number
+  sessions: number
+}
+
+export interface EventTypeCount {
+  event_type: string
+  count: number
+}
+
+export interface EventsSummaryResponse {
+  events: EventSummaryItem[]
+  total: number
+  prev_total: number
+  type_counts: EventTypeCount[]
+}
+
+export interface EventTimeseriesPoint {
+  period: string
+  count: number
+  visitors: number
+}
+
+export interface EventPropValue {
+  value: string
+  count: number
+}
+
+export interface EventProperty {
+  key: string
+  count: number
+  values: EventPropValue[]
+}
+
+export interface EventPropsResponse {
+  properties: EventProperty[]
+}
+
 export interface MapPoint {
   city: string
   country: string

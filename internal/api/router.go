@@ -33,6 +33,9 @@ var consentJS embed.FS
 //go:embed recorder.js
 var recorderJS embed.FS
 
+//go:embed rrweb.min.js
+var rrwebJS embed.FS
+
 // NewRouter creates the HTTP router
 func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager, migrateManager *migrate.JobManager, replayMgr *replay.Store) http.Handler {
 	r := chi.NewRouter()
@@ -108,6 +111,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 
 	// Replay recorder script (public)
 	r.Get("/r.js", h.ServeRecorderScript)
+
+	// Self-hosted rrweb library (public, immutable cache)
+	r.Get("/r/rrweb.min.js", h.ServeRrwebScript)
 
 	// Consent banner script
 	r.Get("/c.js", h.ServeConsentScript)
@@ -204,6 +210,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/browsers", h.GetStatsBrowsers)
 			r.Get("/stats/campaigns", h.GetStatsCampaigns)
 			r.Get("/stats/events", h.GetStatsCustomEvents)
+			r.Get("/stats/events/summary", h.GetStatsEventsSummary)
+			r.Get("/stats/events/timeseries", h.GetStatsEventsTimeseries)
+			r.Get("/stats/events/props", h.GetStatsEventsProps)
 			r.Get("/stats/outbound", h.GetStatsOutbound)
 			r.Get("/stats/bots", h.GetStatsBots)                       // Bot traffic breakdown
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data

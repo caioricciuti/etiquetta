@@ -56,3 +56,6 @@ generated_licenses/
 /gen_license.md
 
 CLAUDE.md
+
+# Build artifact: rrweb bundle copied from node_modules
+internal/api/rrweb.min.js

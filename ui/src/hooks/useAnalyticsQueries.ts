@@ -28,6 +28,9 @@ import type {
   AdProvider,
   AdSpendPoint,
   AdAttributionRow,
+  EventsSummaryResponse,
+  EventTimeseriesPoint,
+  EventPropsResponse,
 } from '../lib/types'
 
 function useAnalyticsParams() {
@@ -189,6 +192,48 @@ export function useOutboundLinks() {
     queryFn: () => fetchAPI<OutboundLink[]>(`/api/stats/outbound?${qs}`),
     enabled,
     meta: { silent: true },
+    placeholderData: keepPreviousData,
+  })
+}
+
+// --- Events Page ---
+
+export function useEventsSummary(eventType?: string) {
+  const { qs, enabled } = useAnalyticsParams()
+  const params = new URLSearchParams(qs)
+  if (eventType) params.set('event_type', eventType)
+  const fullQs = params.toString()
+  return useQuery({
+    queryKey: ['stats', 'events', 'summary', fullQs],
+    queryFn: () => fetchAPI<EventsSummaryResponse>(`/api/stats/events/summary?${fullQs}`),
+    enabled,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useEventsTimeseries(eventName?: string, eventType?: string) {
+  const { qs, enabled } = useAnalyticsParams()
+  const params = new URLSearchParams(qs)
+  if (eventName) params.set('event_name', eventName)
+  if (eventType) params.set('event_type', eventType)
+  const fullQs = params.toString()
+  return useQuery({
+    queryKey: ['stats', 'events', 'timeseries', fullQs],
+    queryFn: () => fetchAPI<EventTimeseriesPoint[]>(`/api/stats/events/timeseries?${fullQs}`),
+    enabled: enabled && !!eventName,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useEventsProps(eventName?: string) {
+  const { qs, enabled } = useAnalyticsParams()
+  const params = new URLSearchParams(qs)
+  if (eventName) params.set('event_name', eventName)
+  const fullQs = params.toString()
+  return useQuery({
+    queryKey: ['stats', 'events', 'props', fullQs],
+    queryFn: () => fetchAPI<EventPropsResponse>(`/api/stats/events/props?${fullQs}`),
+    enabled: enabled && !!eventName,
     placeholderData: keepPreviousData,
   })
 }
