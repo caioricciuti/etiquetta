@@ -20,6 +20,8 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/identification"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
+	"github.com/caioricciuti/etiquetta/internal/migrate"
+	"github.com/caioricciuti/etiquetta/internal/replay"
 )
 
 //go:embed tracker.js
@@ -28,8 +30,11 @@ var trackerJS embed.FS
 //go:embed consent.js
 var consentJS embed.FS
 
+//go:embed recorder.js
+var recorderJS embed.FS
+
 // NewRouter creates the HTTP router
-func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager) http.Handler {
+func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager, migrateManager *migrate.JobManager, replayMgr *replay.Store) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -80,7 +85,11 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		bufferMgr:      bufferMgr,
 		connStore:      connStore,
 		syncManager:    syncManager,
+		migrateManager: migrateManager,
 	}
+
+	// Set the replay store for handlers
+	replayStore = replayMgr
 
 	// ========== Public endpoints ==========
 
@@ -91,6 +100,15 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 	// Ingest endpoint (rate limited: 100 req/min/IP)
 	r.With(RateLimit(100, time.Minute)).Post("/i", h.Ingest)
 
+	// Session replay ingest (rate limited: 30 req/min/IP — larger payloads)
+	r.With(RateLimit(30, time.Minute)).Post("/r", h.IngestReplay)
+
+	// Replay config for tracker (public)
+	r.Get("/r/config", h.ServeReplayConfig)
+
+	// Replay recorder script (public)
+	r.Get("/r.js", h.ServeRecorderScript)
+
 	// Consent banner script
 	r.Get("/c.js", h.ServeConsentScript)
 
@@ -100,6 +118,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 
 	// Tag Manager container script
 	r.Get("/tm/{siteId}.js", h.ServeContainerScript)
+
+	// robots.txt (dynamic, based on AI crawler settings)
+	r.Get("/robots.txt", h.ServeRobotsTxt)
 
 	// Health check
 	r.Get("/health", h.Health)
@@ -148,6 +169,13 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Put("/settings/geoip", h.UpdateGeoIPSettings)
 				r.Get("/settings/geoip/status", h.GetGeoIPStatus)
 				r.Post("/settings/geoip/download", h.DownloadGeoIPDatabase)
+			})
+
+			// AI Crawler Settings (admin only)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Get("/settings/ai-crawlers", h.GetAICrawlerSettings)
+				r.Put("/settings/ai-crawlers", h.UpdateAICrawlerSettings)
 			})
 
 			// Email Settings (admin only)
@@ -241,6 +269,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Get("/tagmanager/containers/{id}/export", h.ExportContainer)
 				r.Post("/tagmanager/containers/{id}/import", h.ImportContainer)
 				r.Post("/tagmanager/containers/{id}/preview-token", h.PreviewToken)
+				r.Get("/tagmanager/pick-proxy", h.PickProxy)
 
 				// Tag CRUD
 				r.Get("/tagmanager/containers/{cid}/tags", h.ListTags)
@@ -325,6 +354,29 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Use(authMiddleware.RequireAdmin)
 				r.Post("/explorer/query", h.ExplorerQuery)
 				r.Get("/explorer/schema", h.ExplorerSchema)
+			})
+
+			// Migration tools (admin only, all tiers)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Post("/migrate/analyze", h.MigrateAnalyze)
+				r.Post("/migrate/start", h.MigrateStart)
+				r.Get("/migrate/jobs", h.MigrateListJobs)
+				r.Get("/migrate/jobs/{id}", h.MigrateGetJob)
+				r.Delete("/migrate/jobs/{id}", h.MigrateRollback)
+				r.Post("/migrate/jobs/{id}/cancel", h.MigrateCancelJob)
+				r.Post("/migrate/gtm/convert", h.MigrateGTMConvert)
+			})
+
+			// Pro features - Session Replay
+			r.Group(func(r chi.Router) {
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureSessionReplay))
+				r.Get("/replays", h.ListReplays)
+				r.Get("/replays/stats", h.GetReplayStats)
+				r.Get("/replays/settings", h.GetReplaySettings)
+				r.Put("/replays/settings", h.UpdateReplaySettings)
+				r.Get("/replays/{sessionId}", h.GetReplay)
+				r.Delete("/replays/{sessionId}", h.DeleteReplay)
 			})
 		})
 	})

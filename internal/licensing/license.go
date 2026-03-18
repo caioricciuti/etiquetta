@@ -23,7 +23,8 @@ const (
 	FeatureBotDetection  = "bot_detection"
 	FeatureConsent       = "consent"
 	FeatureTagManager    = "tag_manager"
-	FeatureConnections   = "connections"
+	FeatureConnections    = "connections"
+	FeatureSessionReplay = "session_replay"
 )
 
 // License represents a validated license
@@ -94,7 +95,8 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true,
 			FeatureConsent:       true,
 			FeatureTagManager:    true,
-			FeatureConnections:   true,
+			FeatureConnections:    true,
+			FeatureSessionReplay: true,
 		}
 	case TierPro:
 		return map[string]bool{
@@ -110,7 +112,8 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true,
 			FeatureConsent:       true,
 			FeatureTagManager:    true,
-			FeatureConnections:   true,
+			FeatureConnections:    true,
+			FeatureSessionReplay: true,
 		}
 	default: // community
 		return map[string]bool{
@@ -126,7 +129,8 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureBotDetection:  true, // Basic bot detection available in community
 			FeatureConsent:       false,
 			FeatureTagManager:    false,
-			FeatureConnections:   true, // Available in community (limited to 1)
+			FeatureConnections:    true, // Available in community (limited to 1)
+			FeatureSessionReplay: false,
 		}
 	}
 }

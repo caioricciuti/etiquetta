@@ -568,10 +568,17 @@
 
   init();
 
-  // Auto-load consent banner and tag manager
-  // Only tracker script tag is required; consent (c.js) and tag manager (tm/{siteId}.js)
-  // are injected automatically. Both scripts handle 404s gracefully (no config = silent exit).
+  // Auto-load consent banner, tag manager, and session recorder
+  // Only tracker script tag is required; consent (c.js), tag manager (tm/{siteId}.js),
+  // and recorder (r.js) are injected automatically. All handle 404s gracefully.
   if (SITE_ID) {
+    function loadRecorder() {
+      var rs = document.createElement('script');
+      rs.src = BASE_URL + '/r.js';
+      rs.async = true;
+      document.head.appendChild(rs);
+    }
+
     function loadTagManager() {
       var tms = document.createElement('script');
       var tmUrl = BASE_URL + '/tm/' + SITE_ID + '.js';
@@ -579,6 +586,8 @@
       if (dbgToken) tmUrl += '?debug=' + encodeURIComponent(dbgToken);
       tms.src = tmUrl;
       tms.async = true;
+      tms.onload = loadRecorder;
+      tms.onerror = loadRecorder;
       document.head.appendChild(tms);
     }
 

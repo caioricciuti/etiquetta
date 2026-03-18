@@ -693,7 +693,8 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 				SUM(CASE WHEN bot_category = 'human' THEN 1 ELSE 0 END) as humans,
 				SUM(CASE WHEN bot_category = 'suspicious' THEN 1 ELSE 0 END) as suspicious,
 				SUM(CASE WHEN bot_category = 'bad_bot' THEN 1 ELSE 0 END) as bad_bots,
-				SUM(CASE WHEN bot_category = 'good_bot' THEN 1 ELSE 0 END) as good_bots
+				SUM(CASE WHEN bot_category = 'good_bot' THEN 1 ELSE 0 END) as good_bots,
+				SUM(CASE WHEN bot_category = 'ai_crawler' THEN 1 ELSE 0 END) as ai_crawlers
 			FROM events
 			WHERE timestamp >= ? AND timestamp <= ? AND domain = ?
 			GROUP BY period
@@ -706,7 +707,8 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 				SUM(CASE WHEN bot_category = 'human' THEN 1 ELSE 0 END) as humans,
 				SUM(CASE WHEN bot_category = 'suspicious' THEN 1 ELSE 0 END) as suspicious,
 				SUM(CASE WHEN bot_category = 'bad_bot' THEN 1 ELSE 0 END) as bad_bots,
-				SUM(CASE WHEN bot_category = 'good_bot' THEN 1 ELSE 0 END) as good_bots
+				SUM(CASE WHEN bot_category = 'good_bot' THEN 1 ELSE 0 END) as good_bots,
+				SUM(CASE WHEN bot_category = 'ai_crawler' THEN 1 ELSE 0 END) as ai_crawlers
 			FROM events
 			WHERE timestamp >= ? AND timestamp <= ?
 			GROUP BY period
@@ -721,14 +723,15 @@ func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
 	timeseries := make([]map[string]interface{}, 0)
 	for timeRows.Next() {
 		var period string
-		var humans, suspicious, badBots, goodBots int64
-		timeRows.Scan(&period, &humans, &suspicious, &badBots, &goodBots)
+		var humans, suspicious, badBots, goodBots, aiCrawlers int64
+		timeRows.Scan(&period, &humans, &suspicious, &badBots, &goodBots, &aiCrawlers)
 		timeseries = append(timeseries, map[string]interface{}{
-			"period":     period,
-			"humans":     humans,
-			"suspicious": suspicious,
-			"bad_bots":   badBots,
-			"good_bots":  goodBots,
+			"period":      period,
+			"humans":      humans,
+			"suspicious":  suspicious,
+			"bad_bots":    badBots,
+			"good_bots":   goodBots,
+			"ai_crawlers": aiCrawlers,
 		})
 	}
 	timeRows.Close()

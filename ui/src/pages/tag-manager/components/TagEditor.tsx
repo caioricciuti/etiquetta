@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { useCreateTag, useUpdateTag } from '@/hooks/useTagManager'
+import { useCreateTag, useUpdateTag, useVariables } from '@/hooks/useTagManager'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
+import { CodeEditor } from './CodeEditor'
 import { Switch } from '@/components/ui/switch'
 import {
   Sheet,
@@ -86,6 +86,8 @@ function TagEditorForm({
   const [form, setForm] = useState<TagFormState>(() => getInitialState(tag))
   const createTag = useCreateTag(containerId)
   const updateTag = useUpdateTag(containerId)
+  const { data: variables = [] } = useVariables(containerId)
+  const variableNames = variables.map((v) => v.name)
 
   const isEditing = !!tag
   const isPending = createTag.isPending || updateTag.isPending
@@ -200,13 +202,13 @@ function TagEditorForm({
           <div key={field.key} className="space-y-2">
             <Label htmlFor={`config-${field.key}`}>{field.label}</Label>
             {field.type === 'textarea' ? (
-              <Textarea
-                id={`config-${field.key}`}
+              <CodeEditor
                 value={form.config[field.key] ?? ''}
-                onChange={(e) => handleConfigChange(field.key, e.target.value)}
+                onChange={(v) => handleConfigChange(field.key, v)}
+                language={field.key === 'event_props' ? 'json' : 'html'}
+                height="200px"
                 placeholder={field.placeholder}
-                required={field.required}
-                className="font-mono text-xs min-h-[120px]"
+                variables={variableNames}
               />
             ) : field.type === 'select' && field.options ? (
               <Select

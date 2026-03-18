@@ -118,6 +118,7 @@ export function DashboardHeader() {
               <SelectItem value="bots">Bots only</SelectItem>
               <SelectItem value="good_bots">Good bots</SelectItem>
               <SelectItem value="bad_bots">Bad bots</SelectItem>
+              <SelectItem value="ai_crawlers">AI Crawlers</SelectItem>
               <SelectItem value="suspicious">Suspicious</SelectItem>
             </SelectContent>
           </Select>

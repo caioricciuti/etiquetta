@@ -126,7 +126,7 @@ func (b *BatchAnalyzer) analyzeZeroInteraction(since time.Time) int {
 		var botScore int
 		var botSignals, botCategory string
 		err := b.db.QueryRow(
-			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%zero_interaction%' LIMIT 1",
+			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%zero_interaction%' LIMIT 1",
 			sid,
 		).Scan(&botScore, &botSignals, &botCategory)
 		if err != nil {
@@ -146,7 +146,7 @@ func (b *BatchAnalyzer) analyzeZeroInteraction(since time.Time) int {
 		}
 
 		result, err := b.db.Exec(
-			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%zero_interaction%'",
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_score < 75 AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%zero_interaction%'",
 			newScore, newSignals, newCategory, sid,
 		)
 		if err != nil {
@@ -189,7 +189,7 @@ func (b *BatchAnalyzer) analyzeImpossibleSpeed(since time.Time) int {
 		var botScore int
 		var botSignals string
 		err := b.db.QueryRow(
-			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%impossible_speed%' LIMIT 1",
+			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%impossible_speed%' LIMIT 1",
 			sid,
 		).Scan(&botScore, &botSignals)
 		if err != nil {
@@ -203,7 +203,7 @@ func (b *BatchAnalyzer) analyzeImpossibleSpeed(since time.Time) int {
 		newSignals := appendSignal(botSignals, "impossible_speed", 30)
 
 		result, err := b.db.Exec(
-			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = 'bad_bot' WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%impossible_speed%'",
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = 'bad_bot' WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%impossible_speed%'",
 			newScore, newSignals, sid,
 		)
 		if err != nil {
@@ -246,7 +246,7 @@ func (b *BatchAnalyzer) analyzePerfectTiming(since time.Time) int {
 		var botScore int
 		var botSignals string
 		err := b.db.QueryRow(
-			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%perfect_timing%' LIMIT 1",
+			"SELECT bot_score, bot_signals FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%perfect_timing%' LIMIT 1",
 			sid,
 		).Scan(&botScore, &botSignals)
 		if err != nil {
@@ -264,7 +264,7 @@ func (b *BatchAnalyzer) analyzePerfectTiming(since time.Time) int {
 		}
 
 		result, err := b.db.Exec(
-			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%perfect_timing%'",
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%perfect_timing%'",
 			newScore, newSignals, newCategory, sid,
 		)
 		if err != nil {
@@ -304,7 +304,7 @@ func (b *BatchAnalyzer) analyzeAnomalousVitals(since time.Time) int {
 		var botScore int
 		var botSignals, botCategory string
 		err := b.db.QueryRow(
-			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%anomalous_vitals%' LIMIT 1",
+			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%anomalous_vitals%' LIMIT 1",
 			sid,
 		).Scan(&botScore, &botSignals, &botCategory)
 		if err != nil {
@@ -328,7 +328,7 @@ func (b *BatchAnalyzer) analyzeAnomalousVitals(since time.Time) int {
 		}
 
 		result, err := b.db.Exec(
-			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%anomalous_vitals%'",
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%anomalous_vitals%'",
 			newScore, newSignals, newCategory, sid,
 		)
 		if err != nil {
@@ -374,7 +374,7 @@ func (b *BatchAnalyzer) analyzeNoInteractionLongSession(since time.Time) int {
 		var botScore int
 		var botSignals, botCategory string
 		err := b.db.QueryRow(
-			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%no_interaction_long_session%' LIMIT 1",
+			"SELECT bot_score, bot_signals, bot_category FROM events WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%no_interaction_long_session%' LIMIT 1",
 			sid,
 		).Scan(&botScore, &botSignals, &botCategory)
 		if err != nil {
@@ -397,7 +397,7 @@ func (b *BatchAnalyzer) analyzeNoInteractionLongSession(since time.Time) int {
 		}
 
 		result, err := b.db.Exec(
-			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_signals NOT LIKE '%no_interaction_long_session%'",
+			"UPDATE events SET bot_score = ?, bot_signals = ?, bot_category = ? WHERE session_id = ? AND bot_category != 'good_bot' AND bot_category != 'ai_crawler' AND bot_signals NOT LIKE '%no_interaction_long_session%'",
 			newScore, newSignals, newCategory, sid,
 		)
 		if err != nil {

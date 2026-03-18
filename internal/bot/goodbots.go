@@ -93,3 +93,92 @@ func GetGoodBotsList() []string {
 	}
 	return names
 }
+
+// aiCrawlers is a list of known AI training/inference crawlers
+var aiCrawlers = []GoodBot{
+	// OpenAI
+	{Name: "GPTBot", Pattern: regexp.MustCompile(`(?i)gptbot`)},
+	{Name: "ChatGPT-User", Pattern: regexp.MustCompile(`(?i)chatgpt-user`)},
+	{Name: "OAI-SearchBot", Pattern: regexp.MustCompile(`(?i)oai-searchbot`)},
+
+	// Anthropic
+	{Name: "ClaudeBot", Pattern: regexp.MustCompile(`(?i)claudebot`)},
+	{Name: "anthropic-ai", Pattern: regexp.MustCompile(`(?i)anthropic-ai`)},
+
+	// Google AI training
+	{Name: "Google-Extended", Pattern: regexp.MustCompile(`(?i)google-extended`)},
+
+	// Apple AI (must be checked before applebot in goodBots)
+	{Name: "Applebot-Extended", Pattern: regexp.MustCompile(`(?i)applebot-extended`)},
+
+	// ByteDance / TikTok
+	{Name: "Bytespider", Pattern: regexp.MustCompile(`(?i)bytespider`)},
+
+	// Common Crawl
+	{Name: "CCBot", Pattern: regexp.MustCompile(`(?i)ccbot`)},
+
+	// Perplexity AI
+	{Name: "PerplexityBot", Pattern: regexp.MustCompile(`(?i)perplexitybot`)},
+
+	// Meta AI training
+	{Name: "Meta-ExternalAgent", Pattern: regexp.MustCompile(`(?i)meta-externalagent`)},
+	{Name: "meta-externalfetcher", Pattern: regexp.MustCompile(`(?i)meta-externalfetcher`)},
+
+	// Cohere
+	{Name: "cohere-ai", Pattern: regexp.MustCompile(`(?i)cohere-ai`)},
+
+	// You.com
+	{Name: "YouBot", Pattern: regexp.MustCompile(`(?i)youbot`)},
+
+	// Allen Institute
+	{Name: "AI2Bot", Pattern: regexp.MustCompile(`(?i)ai2bot`)},
+
+	// Diffbot
+	{Name: "Diffbot", Pattern: regexp.MustCompile(`(?i)diffbot`)},
+
+	// Amazon
+	{Name: "Amazonbot", Pattern: regexp.MustCompile(`(?i)amazonbot`)},
+
+	// Huawei
+	{Name: "PetalBot", Pattern: regexp.MustCompile(`(?i)petalbot`)},
+
+	// Timpi
+	{Name: "Timpibot", Pattern: regexp.MustCompile(`(?i)timpibot`)},
+}
+
+// IsAICrawler checks if the user agent belongs to a known AI crawler
+func IsAICrawler(userAgent string) bool {
+	if userAgent == "" {
+		return false
+	}
+	ua := strings.ToLower(userAgent)
+	for _, c := range aiCrawlers {
+		if c.Pattern.MatchString(ua) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetAICrawlerName returns the name of the AI crawler if detected
+func GetAICrawlerName(userAgent string) string {
+	if userAgent == "" {
+		return ""
+	}
+	ua := strings.ToLower(userAgent)
+	for _, c := range aiCrawlers {
+		if c.Pattern.MatchString(ua) {
+			return c.Name
+		}
+	}
+	return ""
+}
+
+// GetAICrawlersList returns a list of all known AI crawler names
+func GetAICrawlersList() []string {
+	names := make([]string, len(aiCrawlers))
+	for i, c := range aiCrawlers {
+		names[i] = c.Name
+	}
+	return names
+}

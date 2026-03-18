@@ -12,6 +12,7 @@ const (
 	CategoryBadBot     = "bad_bot"
 	CategoryGoodBot    = "good_bot"
 	CategoryAutomation = "automation"
+	CategoryAICrawler  = "ai_crawler"
 )
 
 // Signal weights for bot scoring
@@ -73,7 +74,20 @@ func CalculateScore(userAgent string, clientSignals *ClientSignals, isDatacenter
 
 	ua := strings.ToLower(userAgent)
 
-	// Check for known good bots first
+	// Check for AI crawlers first (before good bots to prevent Applebot-Extended matching applebot)
+	if IsAICrawler(userAgent) {
+		result.Score = 0
+		result.Category = CategoryAICrawler
+		result.Signals = append(result.Signals, Signal{
+			Name:   "known_ai_crawler",
+			Weight: 0,
+			Value:  GetAICrawlerName(userAgent),
+		})
+		result.IsBot = true
+		return result
+	}
+
+	// Check for known good bots
 	if IsGoodBot(userAgent) {
 		result.Score = 0
 		result.Category = CategoryGoodBot

@@ -185,9 +185,9 @@ export function DateRangePicker({
 
       let heatColor: string | undefined
       if (showHeatmap) {
-        if (ratio > 0.66) heatColor = 'rgba(239, 68, 68, 0.3)'
-        else if (ratio > 0.33) heatColor = 'rgba(249, 115, 22, 0.25)'
-        else heatColor = 'rgba(251, 191, 36, 0.2)'
+        if (ratio > 0.66) heatColor = 'rgba(34, 197, 94, 0.50)'
+        else if (ratio > 0.33) heatColor = 'rgba(34, 197, 94, 0.30)'
+        else heatColor = 'rgba(34, 197, 94, 0.15)'
       }
 
       const mergedStyle = heatColor

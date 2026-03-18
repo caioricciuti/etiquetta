@@ -46,6 +46,7 @@ type Event struct {
 	PageDuration int64   `parquet:"page_duration"`
 	DatacenterIP int64   `parquet:"datacenter_ip"`
 	IPHash       string  `parquet:"ip_hash"`
+	ImportID     string  `parquet:"import_id"`
 }
 
 // Performance is the parquet-friendly representation of web vitals.
@@ -194,6 +195,7 @@ func ConvertEvent(e *database.Event) Event {
 		PageDuration: intFromPtr(e.PageDuration),
 		DatacenterIP: boolToInt(e.DatacenterIP),
 		IPHash:       strFromPtr(e.IPHash),
+		ImportID:     "",
 	}
 }
 

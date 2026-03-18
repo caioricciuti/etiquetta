@@ -21,6 +21,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/identification"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
+	"github.com/caioricciuti/etiquetta/internal/migrate"
 )
 
 // Version is set from main.go at startup
@@ -36,6 +37,7 @@ type Handlers struct {
 	bufferMgr      *buffer.BufferManager
 	connStore      *connections.Store
 	syncManager    *connections.SyncManager
+	migrateManager *migrate.JobManager
 
 	// SSE subscribers
 	sseClients map[chan []byte]bool

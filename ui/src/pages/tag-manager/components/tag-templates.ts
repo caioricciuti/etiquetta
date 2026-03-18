@@ -149,7 +149,46 @@ export const TRIGGER_TYPE_LABELS: Record<string, string> = {
   timer: 'Timer',
   history_change: 'History Change',
   form_submit: 'Form Submit',
+  element_visibility: 'Element Visibility',
 }
+
+export const TRIGGER_TYPE_DESCRIPTIONS: Record<string, string> = {
+  page_load: 'Fires when the page starts loading',
+  dom_ready: 'Fires when the DOM is fully parsed',
+  click_all: 'Fires on any click anywhere on the page',
+  click_specific: 'Fires when a specific element is clicked',
+  scroll_depth: 'Fires when the user scrolls past a threshold',
+  custom_event: 'Fires when a custom JavaScript event is dispatched',
+  timer: 'Fires on a timed interval',
+  history_change: 'Fires on SPA navigation (pushState/popstate)',
+  form_submit: 'Fires when a form is submitted',
+  element_visibility: 'Fires when a specific element becomes visible in the viewport',
+}
+
+export const TRIGGER_TYPE_ICONS: Record<string, string> = {
+  page_load: 'FileText',
+  dom_ready: 'LayoutTemplate',
+  click_all: 'MousePointer',
+  click_specific: 'MousePointerClick',
+  scroll_depth: 'ArrowDownToLine',
+  custom_event: 'Sparkles',
+  timer: 'Clock',
+  history_change: 'Route',
+  form_submit: 'FormInput',
+  element_visibility: 'Eye',
+}
+
+// Trigger types that need a selector (element targeting)
+export const SELECTOR_TRIGGER_TYPES = new Set(['click_specific', 'form_submit', 'element_visibility'])
+
+// Match types for element selection
+export const SELECTOR_MATCH_TYPES = [
+  { value: 'css', label: 'CSS Selector', description: 'Match using any CSS selector', placeholder: '.btn-primary, #checkout', icon: 'Code' },
+  { value: 'id', label: 'Element ID', description: 'Match by the element\'s ID attribute', placeholder: 'buy-button', icon: 'Hash' },
+  { value: 'data_attr', label: 'Data Attribute', description: 'Match by a data-* attribute', placeholder: '', icon: 'Database' },
+  { value: 'text', label: 'Text Content', description: 'Match elements containing specific text', placeholder: 'Add to Cart', icon: 'Type' },
+  { value: 'link_url', label: 'Link URL', description: 'Match links by their href', placeholder: '/checkout', icon: 'Link' },
+] as const
 
 export const VARIABLE_TYPE_LABELS: Record<string, string> = {
   data_layer: 'Data Layer',
@@ -190,12 +229,11 @@ export const TRIGGER_CONFIG_FIELDS: Record<string, TriggerConfigField[]> = {
     { key: 'interval_ms', label: 'Interval (ms)', type: 'number', required: true, placeholder: '5000' },
     { key: 'limit', label: 'Max Fires', type: 'number', placeholder: '1' },
   ],
-  click_specific: [
-    { key: 'selector', label: 'CSS Selector', type: 'text', required: true, placeholder: '#buy-btn, .cta' },
+  element_visibility: [
+    { key: 'threshold', label: 'Visibility Threshold (%)', type: 'number', required: true, placeholder: '50' },
+    { key: 'fire_once', label: 'Fire Once', type: 'text', placeholder: 'true' },
   ],
-  form_submit: [
-    { key: 'selector', label: 'Form Selector (optional)', type: 'text', placeholder: 'form#checkout' },
-  ],
+  // click_specific, form_submit, element_visibility selectors handled by SelectorBuilder
 }
 
 export interface VariableConfigField {

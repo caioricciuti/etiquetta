@@ -167,7 +167,7 @@ export function TagManagerContainer() {
           </TabsContent>
 
           <TabsContent value="triggers" className="mt-4">
-            <TriggerList containerId={containerId} />
+            <TriggerList containerId={containerId} domain={container.domain ?? ''} />
           </TabsContent>
 
           <TabsContent value="variables" className="mt-4">

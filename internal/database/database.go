@@ -360,6 +360,7 @@ func (db *DB) CleanupOldData(retentionDays int) error {
 	tx.Exec("DELETE FROM events WHERE timestamp < ?", cutoff)
 	tx.Exec("DELETE FROM performance WHERE timestamp < ?", cutoff)
 	tx.Exec("DELETE FROM errors WHERE timestamp < ?", cutoff)
+	tx.Exec("DELETE FROM session_recordings WHERE start_time < ?", cutoff)
 
 	return tx.Commit()
 }

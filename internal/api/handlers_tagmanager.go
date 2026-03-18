@@ -6,9 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +31,156 @@ type debugTokenEntry struct {
 	expiresAt   time.Time
 }
 
+// proxyClient is used by PickProxy to fetch target pages
+var proxyClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
+}
+
+var reCSPMeta = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>`)
+
+// PickProxy fetches a target URL server-side, injects the picker script, and serves it
+func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
+	rawURL := r.URL.Query().Get("url")
+	token := r.URL.Query().Get("token")
+	if rawURL == "" || token == "" {
+		writeError(w, http.StatusBadRequest, "url and token are required")
+		return
+	}
+
+	// Validate token
+	if entry, ok := debugTokens.Load(token); ok {
+		de := entry.(debugTokenEntry)
+		if time.Now().After(de.expiresAt) {
+			debugTokens.Delete(token)
+			writeError(w, http.StatusForbidden, "Token expired")
+			return
+		}
+	} else {
+		writeError(w, http.StatusForbidden, "Invalid token")
+		return
+	}
+
+	// Parse and validate URL
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		writeError(w, http.StatusBadRequest, "Invalid URL")
+		return
+	}
+
+	// SSRF protection
+	if isPrivateHost(parsed.Hostname()) {
+		writeError(w, http.StatusBadRequest, "Cannot proxy private/local addresses")
+		return
+	}
+
+	// Fetch the target page
+	req, err := http.NewRequestWithContext(r.Context(), "GET", rawURL, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid URL")
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Failed to fetch URL")
+		return
+	}
+	defer resp.Body.Close()
+
+	// Validate content type is HTML
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
+		writeError(w, http.StatusBadRequest, "URL did not return HTML content")
+		return
+	}
+
+	// Read body with size limit (10MB)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Failed to read response")
+		return
+	}
+
+	html := string(body)
+
+	// Inject <base> tag after <head> so relative URLs resolve correctly
+	html = injectBaseTag(html, parsed)
+
+	// Strip CSP meta tags that would block our injected script
+	html = stripCSPMeta(html)
+
+	// Inject picker script before </body>
+	html = injectPickerScript(html)
+
+	// Serve without CSP or X-Frame-Options so the iframe works
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Write([]byte(html))
+}
+
+// isPrivateHost returns true if the hostname resolves to a private/loopback address
+func isPrivateHost(host string) bool {
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower == "0.0.0.0" {
+		return true
+	}
+	// Check for private IP ranges
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	}
+	// Resolve hostname and check
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return true // fail closed
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+			return true
+		}
+	}
+	return false
+}
+
+// injectBaseTag inserts a <base href> after <head> so relative URLs resolve to the target origin
+func injectBaseTag(html string, u *url.URL) string {
+	baseHref := fmt.Sprintf("%s://%s/", u.Scheme, u.Host)
+	baseTag := fmt.Sprintf(`<base href="%s">`, baseHref)
+	// Try to insert after <head> or <head ...>
+	re := regexp.MustCompile(`(?i)(<head[^>]*>)`)
+	if re.MatchString(html) {
+		return re.ReplaceAllString(html, "${1}"+baseTag)
+	}
+	// Fallback: prepend to HTML
+	return baseTag + html
+}
+
+// stripCSPMeta removes <meta http-equiv="Content-Security-Policy"> tags
+func stripCSPMeta(html string) string {
+	return reCSPMeta.ReplaceAllString(html, "")
+}
+
+// injectPickerScript inserts the picker JS before </body>
+func injectPickerScript(html string) string {
+	script := "<script>" + generatePickerJS() + "</script>"
+	lower := strings.ToLower(html)
+	idx := strings.LastIndex(lower, "</body>")
+	if idx != -1 {
+		return html[:idx] + script + html[idx:]
+	}
+	// No </body> — append
+	return html + script
+}
+
 // ServeContainerScript serves the published (or debug draft) container JS for a site
 func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) {
 	siteID := chi.URLParam(r, "siteId")
@@ -35,6 +190,21 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Write([]byte("/* etiquetta: container not available */"))
 		return
+	}
+
+	// Element Picker mode: ?pick=<token>
+	pickToken := r.URL.Query().Get("pick")
+	if pickToken != "" {
+		if entry, ok := debugTokens.Load(pickToken); ok {
+			de := entry.(debugTokenEntry)
+			if time.Now().Before(de.expiresAt) {
+				w.Header().Set("Content-Type", "application/javascript")
+				w.Header().Set("Cache-Control", "no-cache, no-store")
+				w.Write([]byte(generatePickerJS()))
+				return
+			}
+			debugTokens.Delete(pickToken)
+		}
 	}
 
 	// Debug/Preview mode: ?debug=<token>
@@ -265,19 +435,24 @@ func (h *Handlers) GetContainer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	var (
-		domainID, name                string
-		publishedVersion, draftVersion int
-		publishedAt                   *int64
-		publishedBy                   *string
-		createdAt, updatedAt          int64
+		domainID, name                    string
+		publishedVersion, draftVersion    int
+		publishedAt                       *int64
+		publishedBy                       *string
+		createdAt, updatedAt              int64
+		domainName, domain, siteID        string
 	)
 
 	err := h.db.Conn().QueryRow(`
-		SELECT id, domain_id, name, published_version, draft_version,
-		       published_at, published_by, created_at, updated_at
-		FROM tm_containers WHERE id = ?
+		SELECT c.id, c.domain_id, c.name, c.published_version, c.draft_version,
+		       c.published_at, c.published_by, c.created_at, c.updated_at,
+		       d.name, d.domain, d.site_id
+		FROM tm_containers c
+		JOIN domains d ON d.id = c.domain_id
+		WHERE c.id = ?
 	`, id).Scan(&id, &domainID, &name, &publishedVersion, &draftVersion,
-		&publishedAt, &publishedBy, &createdAt, &updatedAt)
+		&publishedAt, &publishedBy, &createdAt, &updatedAt,
+		&domainName, &domain, &siteID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Container not found")
 		return
@@ -293,6 +468,9 @@ func (h *Handlers) GetContainer(w http.ResponseWriter, r *http.Request) {
 		"published_by":      publishedBy,
 		"created_at":        createdAt,
 		"updated_at":        updatedAt,
+		"domain_name":       domainName,
+		"domain":            domain,
+		"site_id":           siteID,
 	})
 }
 
@@ -1517,17 +1695,36 @@ case"tiktok":if(!window.ttq){var tt=function(){tt.methods.forEach(function(m){tt
 case"etiquetta_event":if(window.etiquetta&&window.etiquetta.track){var props={};try{props=JSON.parse(cfg.event_props||"{}");}catch(e){}window.etiquetta.track(cfg.event_name||"event",props);}break;
 }
 }
+function matchElement(target,cfg){
+if(!target||!cfg.selector)return false;
+var mt=cfg.match_type||"css";
+if(mt==="text"){
+var txt=cfg.selector||"";var mode=cfg.text_match_mode||"contains";
+var el=target.closest?target:target.parentElement;
+while(el){
+var elText=(el.textContent||"").trim();
+if(mode==="exact"?elText===txt:elText.indexOf(txt)>=0)return true;
+el=el.parentElement;
+}
+return false;
+}
+if(mt==="id"){return target.closest&&!!target.closest(cfg.selector);}
+if(mt==="data_attr"){return target.closest&&!!target.closest(cfg.selector);}
+if(mt==="link_url"){return target.closest&&!!target.closest(cfg.selector);}
+return target.closest&&!!target.closest(cfg.selector);
+}
 function evalTrigger(trigger,evType,evData){
 var t=trigger.trigger_type,cfg=trigger.config||{};
 var baseMatch=false;
 if(t==="page_load"||t==="dom_ready")baseMatch=!evType||evType===t;
 else if(t==="click_all"&&evType==="click")baseMatch=true;
-else if(t==="click_specific"&&evType==="click"){if(!cfg.selector)baseMatch=false;else baseMatch=evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
+else if(t==="click_specific"&&evType==="click"){if(!cfg.selector)baseMatch=false;else baseMatch=evData&&evData.target&&matchElement(evData.target,cfg);}
 else if(t==="custom_event"&&evType==="custom_event"&&evData===cfg.event_name)baseMatch=true;
 else if(t==="scroll_depth"&&evType==="scroll_depth")baseMatch=true;
 else if(t==="timer"&&evType==="timer")baseMatch=true;
 else if(t==="history_change"&&evType==="history_change")baseMatch=true;
-else if(t==="form_submit"&&evType==="form_submit"){if(!cfg.selector)baseMatch=true;else baseMatch=evData&&evData.target&&evData.target.closest&&!!evData.target.closest(cfg.selector);}
+else if(t==="form_submit"&&evType==="form_submit"){if(!cfg.selector)baseMatch=true;else baseMatch=evData&&evData.target&&matchElement(evData.target,cfg);}
+else if(t==="element_visibility"&&evType==="element_visibility")baseMatch=true;
 else if(!evType&&(t==="page_load"||t==="dom_ready"))baseMatch=true;
 if(!baseMatch)return false;
 var conditions=cfg.conditions;
@@ -1558,6 +1755,7 @@ if(t==="scroll_depth"){var pct=parseInt(cfg.percentage,10)||50;var fired=false;v
 if(t==="timer"){var interval=parseInt(cfg.interval_ms,10)||5000;var limit=parseInt(cfg.limit,10)||0;var count=0;var tid=setInterval(function(){count++;if(!isBlocked("timer")){%sfireTag(tag);}if(limit>0&&count>=limit)clearInterval(tid);},interval);_cl.push(function(){clearInterval(tid);});}
 if(t==="history_change"){var hp=function(){if(!isBlocked("history_change")){%sfireTag(tag);}};window.addEventListener("popstate",hp);var origPush=history.pushState;var origReplace=history.replaceState;history.pushState=function(){origPush.apply(history,arguments);hp();};history.replaceState=function(){origReplace.apply(history,arguments);hp();};_cl.push(function(){window.removeEventListener("popstate",hp);history.pushState=origPush;history.replaceState=origReplace;});}
 if(t==="form_submit"){var fh=function(e){if(evalTrigger(tr,"form_submit",{target:e.target})&&!isBlocked("form_submit",{target:e.target})){%sfireTag(tag);}};document.addEventListener("submit",fh);_cl.push(function(){document.removeEventListener("submit",fh);});}
+if(t==="element_visibility"&&cfg.selector){var threshold=parseInt(cfg.threshold,10)||50;var fireOnce=cfg.fire_once!=="false";var vFired=false;try{var vEls=document.querySelectorAll(cfg.selector);if(vEls.length>0){var vObs=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting&&!vFired){if(!isBlocked("element_visibility")){%sfireTag(tag);}if(fireOnce){vFired=true;vObs.disconnect();}}});},{threshold:threshold/100});vEls.forEach(function(el){vObs.observe(el);});_cl.push(function(){vObs.disconnect();});}}catch(e){}}
 });
 });
 }
@@ -1589,6 +1787,8 @@ if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded"
 		dbg(`_curEvt=_beginEvent("history_change","Navigation");`),
 		// form fire
 		dbg(`_curEvt=_beginEvent("form_submit","Form Submit"+(tr.config.selector?" \u2014 "+tr.config.selector:""));`),
+		// element visibility fire
+		dbg(`_curEvt=_beginEvent("element_visibility","Visible: "+(cfg.selector||""));`),
 		// debug panel suffix
 		debugSuffix,
 	)
@@ -1752,4 +1952,177 @@ _body.innerHTML=h;
 }
 setInterval(function(){if(!_collapsed&&(_activeTab==="variables"||_activeTab==="datalayer"))_renderConsole();},2000);
 `
+}
+
+// generatePickerJS returns a self-contained element picker script injected into the target page.
+// It highlights elements on hover, and on click generates multiple selector suggestions
+// sent back to the opener window via postMessage.
+func generatePickerJS() string {
+	return `(function(){
+"use strict";
+var isIframe=(window.parent!==window);
+var target=isIframe?window.parent:window.opener;
+if(!target){console.warn("Etiquetta Picker: no parent or opener window");return;}
+var overlay=null,tooltip=null,selected=null,active=true;
+var style=document.createElement("style");
+style.textContent=".__etq_pick_hl{outline:2px solid #6366f1!important;outline-offset:-1px;cursor:crosshair!important;}.__etq_pick_overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;cursor:crosshair;}.__etq_pick_tooltip{position:fixed;z-index:2147483647;background:#1e1b4b;color:#e0e7ff;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 10px;border-radius:6px;pointer-events:none;max-width:400px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.3);}.__etq_pick_banner{position:fixed;top:0;left:0;right:0;z-index:2147483647;background:linear-gradient(135deg,#1e1b4b,#312e81);color:#e0e7ff;font:13px/1 system-ui,sans-serif;padding:10px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.2);}.__etq_pick_banner button{background:#6366f1;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font:12px/1 system-ui;font-weight:600;}.__etq_pick_banner button:hover{background:#4f46e5;}.__etq_pick_banner .cancel{background:transparent;border:1px solid #6366f1;}";
+document.head.appendChild(style);
+
+// Banner
+var banner=document.createElement("div");
+banner.className="__etq_pick_banner";
+banner.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M22 2L15 22l-3-9-9-3z"/></svg><span style="flex:1;font-weight:600;">Etiquetta Element Picker</span><span style="opacity:0.7;font-size:12px;">Hover to highlight, click to select</span>';
+var cancelBtn=document.createElement("button");
+cancelBtn.className="cancel";cancelBtn.textContent="Cancel";
+cancelBtn.onclick=function(){cleanup();if(!isIframe)window.close();else try{target.postMessage({type:"etiquetta_picker_cancel"},"*");}catch(e){}};
+banner.appendChild(cancelBtn);
+document.body.appendChild(banner);
+
+// Tooltip
+tooltip=document.createElement("div");
+tooltip.className="__etq_pick_tooltip";
+tooltip.style.display="none";
+document.body.appendChild(tooltip);
+
+var lastHighlighted=null;
+
+// Signal ready
+try{target.postMessage({type:"etiquetta_picker_ready"},"*");}catch(e){}
+
+function getElementInfo(el){
+var tag=el.tagName.toLowerCase();
+var id=el.id||"";
+var classes=Array.from(el.classList).filter(function(c){return c.indexOf("__etq_pick")===-1;});
+var text=(el.textContent||"").trim().replace(/\s+/g," ");
+if(text.length>80)text=text.slice(0,80)+"...";
+var dataAttrs={};
+Array.from(el.attributes).forEach(function(attr){
+if(attr.name.indexOf("data-")===0){
+dataAttrs[attr.name.replace("data-","")]=attr.value;
+}
+});
+var href=el.tagName==="A"?el.getAttribute("href")||"":"";
+return {tag:tag,id:id,classes:classes,text:text,dataAttrs:dataAttrs,href:href};
+}
+
+function generateSelectors(el){
+var info=getElementInfo(el);
+var suggestions=[];
+// 1. ID (highest specificity)
+if(info.id){
+suggestions.push({type:"id",label:"#"+info.id,selector:"#"+info.id,specificity:100,data_attr_name:"",data_attr_value:""});
+}
+// 2. Data attributes
+for(var key in info.dataAttrs){
+var val=info.dataAttrs[key];
+var sel=val?"[data-"+key+'="'+val+'"]':"[data-"+key+"]";
+suggestions.push({type:"data_attr",label:sel,selector:sel,specificity:80,data_attr_name:key,data_attr_value:val});
+}
+// 3. Link URL
+if(info.href&&info.href!=="/"&&info.href!=="#"){
+suggestions.push({type:"link_url",label:'a[href*="'+info.href+'"]',selector:'a[href*="'+info.href+'"]',specificity:70});
+}
+// 4. Text content (if short enough to be meaningful)
+if(info.text&&info.text.length>0&&info.text.length<=60){
+suggestions.push({type:"text",label:'"'+info.text+'"',selector:info.text,specificity:60});
+}
+// 5. CSS by classes
+if(info.classes.length>0){
+var classSel=info.tag+"."+info.classes.join(".");
+suggestions.push({type:"css",label:classSel,selector:classSel,specificity:50});
+}
+// 6. CSS by tag + nth-child (structural)
+var parent=el.parentElement;
+if(parent){
+var siblings=Array.from(parent.children);
+var idx=siblings.indexOf(el)+1;
+var structSel=info.tag+":nth-child("+idx+")";
+// Build full path up 2 levels for uniqueness
+var path=[structSel];
+var cur=parent;
+for(var i=0;i<2&&cur&&cur!==document.body;i++){
+var pTag=cur.tagName.toLowerCase();
+if(cur.id){path.unshift(pTag+"#"+cur.id);break;}
+var pSiblings=cur.parentElement?Array.from(cur.parentElement.children):[];
+var pIdx=pSiblings.indexOf(cur)+1;
+path.unshift(pTag+":nth-child("+pIdx+")");
+cur=cur.parentElement;
+}
+suggestions.push({type:"css",label:path.join(" > "),selector:path.join(" > "),specificity:30});
+}
+// If no suggestions at all, use tag
+if(suggestions.length===0){
+suggestions.push({type:"css",label:info.tag,selector:info.tag,specificity:10});
+}
+return {suggestions:suggestions,tag:info.tag,text:info.text};
+}
+
+function showTooltip(el,x,y){
+var info=getElementInfo(el);
+var parts=["<"+info.tag+">"];
+if(info.id)parts.push('<span style="color:#a5b4fc;">#'+info.id+"</span>");
+if(info.classes.length)parts.push('<span style="color:#86efac;">.'+info.classes.slice(0,3).join(".")+"</span>");
+if(info.text)parts.push('<span style="opacity:0.6;margin-left:4px;">'+info.text.slice(0,40)+"</span>");
+tooltip.innerHTML=parts.join(" ");
+tooltip.style.display="block";
+var tw=tooltip.offsetWidth,th=tooltip.offsetHeight;
+var tx=Math.min(x+12,window.innerWidth-tw-8);
+var ty=y-th-8;if(ty<40)ty=y+16;
+tooltip.style.left=tx+"px";
+tooltip.style.top=ty+"px";
+}
+
+function onMouseMove(e){
+if(!active)return;
+var el=document.elementFromPoint(e.clientX,e.clientY);
+if(!el||el===banner||banner.contains(el)||el===tooltip)return;
+if(lastHighlighted&&lastHighlighted!==el){
+lastHighlighted.classList.remove("__etq_pick_hl");
+}
+el.classList.add("__etq_pick_hl");
+lastHighlighted=el;
+showTooltip(el,e.clientX,e.clientY);
+// Send hover info to parent
+var info=getElementInfo(el);
+try{target.postMessage({type:"etiquetta_picker_hover",tag:info.tag,id:info.id,classes:info.classes.join(" "),text:info.text},"*");}catch(err){}
+}
+
+function onClick(e){
+if(!active)return;
+if(banner.contains(e.target))return;
+e.preventDefault();
+e.stopPropagation();
+e.stopImmediatePropagation();
+var el=lastHighlighted||document.elementFromPoint(e.clientX,e.clientY);
+if(!el||el===banner||el===tooltip)return;
+var result=generateSelectors(el);
+try{
+target.postMessage({type:"etiquetta_picker_result",tag:result.tag,text:result.text,suggestions:result.suggestions},"*");
+}catch(err){console.error("Etiquetta Picker: postMessage failed",err);}
+// Flash green to confirm selection
+el.style.outline="3px solid #22c55e";
+setTimeout(function(){
+el.style.outline="";
+el.classList.remove("__etq_pick_hl");
+},800);
+}
+
+function cleanup(){
+active=false;
+document.removeEventListener("mousemove",onMouseMove,true);
+document.removeEventListener("click",onClick,true);
+if(lastHighlighted)lastHighlighted.classList.remove("__etq_pick_hl");
+if(banner.parentNode)banner.parentNode.removeChild(banner);
+if(tooltip.parentNode)tooltip.parentNode.removeChild(tooltip);
+if(style.parentNode)style.parentNode.removeChild(style);
+}
+
+document.addEventListener("mousemove",onMouseMove,true);
+document.addEventListener("click",onClick,true);
+
+// Listen for cleanup signal from parent
+window.addEventListener("message",function(e){
+if(e.data==="etiquetta_picker_close")cleanup();
+});
+})();`
 }

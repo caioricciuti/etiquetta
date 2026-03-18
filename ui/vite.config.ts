@@ -30,6 +30,14 @@ export default defineConfig({
         target: 'http://localhost:3456',
         changeOrigin: true,
       },
+      '/r': {
+        target: 'http://localhost:3456',
+        changeOrigin: true,
+      },
+      '/r.js': {
+        target: 'http://localhost:3456',
+        changeOrigin: true,
+      },
       '/c.js': {
         target: 'http://localhost:3456',
         changeOrigin: true,

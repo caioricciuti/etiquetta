@@ -20,12 +20,14 @@ import {
 import { ConsentDashboard, ConsentConfig } from './pages/consent'
 import { PrivacyCenter } from './pages/privacy'
 import { TagManager, TagManagerContainer } from './pages/tag-manager'
+import { Migrate } from './pages/migrate'
 import { Explorer } from './pages/Explorer'
 import { Login } from './pages/Login'
 import { BotAnalysis } from './pages/BotAnalysis'
 import { Compare } from './pages/Compare'
 import { Connections } from './pages/Connections'
 import { AdFraud } from './pages/AdFraud'
+import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
 import {
@@ -52,6 +54,8 @@ import {
   Fingerprint,
   Activity,
   Cable,
+  Import,
+  Video,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -245,6 +249,7 @@ function AppSidebar() {
   const navigation = [
     { path: '/', name: 'Dashboard', icon: BarChart3 },
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
+    { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
     { path: '/consent', name: 'Consent', icon: Shield, pro: 'consent' },
     { path: '/connections', name: 'Connections', icon: Cable, pro: 'connections' },
@@ -252,6 +257,7 @@ function AppSidebar() {
     { path: '/privacy', name: 'Privacy Center', icon: Fingerprint, adminOnly: true },
     { path: '/explorer', name: 'Data Explorer', icon: Database, adminOnly: true },
     { path: '/tag-manager', name: 'Tag Manager', icon: Tags, pro: 'tag_manager' },
+    { path: '/migrate', name: 'Migrate', icon: Import, adminOnly: true },
   ]
 
   const settingsItems = [
@@ -399,6 +405,9 @@ function AppLayout() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/compare" element={<Compare />} />
               <Route path="/bots" element={<BotAnalysis />} />
+              <Route path="/replays" element={<ReplayList />} />
+              <Route path="/replays/settings" element={<ReplaySettings />} />
+              <Route path="/replays/:sessionId" element={<ReplayPlayer />} />
               <Route path="/connections" element={<Connections />} />
               <Route path="/fraud" element={<AdFraud />} />
               <Route path="/explorer" element={<Explorer />} />
@@ -416,6 +425,7 @@ function AppLayout() {
               <Route path="/consent/settings" element={<ConsentConfig />} />
               <Route path="/tag-manager" element={<TagManager />} />
               <Route path="/tag-manager/:containerId" element={<TagManagerContainer />} />
+              <Route path="/migrate" element={<Migrate />} />
               <Route path="/settings/license" element={
                 <div className="p-6 max-w-4xl mx-auto">
                   <div className="mb-6">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { fetchAPI } from '@/lib/api'
 import { Navigate } from 'react-router-dom'
@@ -8,10 +8,11 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Activity, Database, Loader2 } from 'lucide-react'
+import { Activity, Database, Loader2, Brain } from 'lucide-react'
 import { toast } from 'sonner'
 import { useLicense } from '@/hooks/useLicenseQuery'
 import { SettingsLayout } from './SettingsLayout'
+import type { AICrawlerSettings } from '@/lib/types'
 
 export function TrackingSettings() {
   const { isAdmin } = useAuth()
@@ -210,6 +211,103 @@ export function TrackingSettings() {
           })()}
         </CardContent>
       </Card>
+
+      <AICrawlerCard />
     </SettingsLayout>
+  )
+}
+
+function AICrawlerCard() {
+  const [crawlerSettings, setCrawlerSettings] = useState<AICrawlerSettings | null>(null)
+  const [editedRules, setEditedRules] = useState<Record<string, 'allow' | 'block'> | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    fetchAPI<AICrawlerSettings>('/api/settings/ai-crawlers')
+      .then((data) => {
+        setCrawlerSettings(data)
+      })
+      .catch(() => toast.error('Failed to load AI crawler settings'))
+  }, [])
+
+  const currentRules = editedRules ?? crawlerSettings?.rules ?? {}
+  const hasChanges = editedRules !== null
+
+  const toggleCrawler = useCallback((name: string) => {
+    setEditedRules((prev) => {
+      const base = prev ?? crawlerSettings?.rules ?? {}
+      const current = base[name] ?? 'block'
+      return { ...base, [name]: current === 'allow' ? 'block' : 'allow' }
+    })
+  }, [crawlerSettings])
+
+  async function handleSave() {
+    if (!hasChanges) return
+    setSaving(true)
+    try {
+      await fetchAPI('/api/settings/ai-crawlers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: editedRules }),
+      })
+      setCrawlerSettings((prev) => prev ? { ...prev, rules: editedRules! } : prev)
+      setEditedRules(null)
+      toast.success('AI crawler settings saved')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Brain className="h-5 w-5" />
+          AI Crawler Controls
+        </CardTitle>
+        <CardDescription>
+          Control which AI crawlers can access your site via <code className="text-xs bg-muted px-1 rounded">/robots.txt</code>.
+          Blocked crawlers are instructed not to crawl your content for AI training.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!crawlerSettings ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading crawlers...
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              {crawlerSettings.known_crawlers.map((name) => (
+                <div key={name} className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{name}</Label>
+                  </div>
+                  <Switch
+                    checked={(currentRules[name] ?? 'block') === 'allow'}
+                    onCheckedChange={() => toggleCrawler(name)}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <p className="text-xs text-muted-foreground pt-2">
+              Toggling a crawler to &quot;on&quot; allows it to crawl your site. Off (default) adds a Disallow rule to robots.txt.
+              Note: robots.txt is advisory — well-behaved crawlers respect it, but it is not enforced.
+            </p>
+
+            <div className="flex justify-end pt-4 border-t">
+              <Button onClick={handleSave} disabled={saving || !hasChanges}>
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Save AI Crawler Settings
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }

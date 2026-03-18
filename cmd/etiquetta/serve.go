@@ -24,6 +24,8 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/database"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
+	"github.com/caioricciuti/etiquetta/internal/migrate"
+	"github.com/caioricciuti/etiquetta/internal/replay"
 	"github.com/caioricciuti/etiquetta/internal/settings"
 	"github.com/caioricciuti/etiquetta/ui"
 )
@@ -195,6 +197,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	bufferCfg := buffer.DefaultConfig(duckdbPath, dataDir)
 	bufferMgr := buffer.NewBufferManager(db.Conn(), bufferCfg)
 
+	// Initialize migrate manager
+	migrateStore := migrate.NewStore(db.Conn())
+	migrateManager := migrate.NewJobManager(migrateStore, bufferMgr, dataDir)
+
 	// Initialize compaction (runs daily)
 	compactor := buffer.NewCompactor(db.Conn())
 	compactCtx, compactCancel := context.WithCancel(context.Background())
@@ -205,6 +211,9 @@ func runServe(cmd *cobra.Command, args []string) {
 	syncManager := connections.NewSyncManager(connStore, 1*time.Hour)
 	go syncManager.Start()
 
+	// Initialize replay store
+	replayStore := replay.NewStore(dataDir)
+
 	// Get embedded UI filesystem
 	uiDist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
@@ -212,15 +221,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create router
-	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager)
+	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager, migrateManager, replayStore)
 
 	// Start data retention cleanup goroutine
 	go func() {
-		runDataRetention(db, licenseManager, settingsSvc)
+		runDataRetention(db, licenseManager, settingsSvc, replayStore)
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			runDataRetention(db, licenseManager, settingsSvc)
+			runDataRetention(db, licenseManager, settingsSvc, replayStore)
 		}
 	}()
 
@@ -252,6 +261,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		server.Shutdown(shutdownCtx)
 
 		// Stop background jobs
+		migrateManager.Shutdown()
 		batchAnalyzer.Stop()
 		syncManager.Stop()
 		compactCancel()
@@ -274,7 +284,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runDataRetention(db *database.DB, lm *licensing.Manager, settingsSvc *settings.Service) {
+func runDataRetention(db *database.DB, lm *licensing.Manager, settingsSvc *settings.Service, replayStore *replay.Store) {
 	tier := lm.GetTier()
 	userChoice := settingsSvc.GetInt("data_retention_days", 180)
 
@@ -298,5 +308,11 @@ func runDataRetention(db *database.DB, lm *licensing.Manager, settingsSvc *setti
 		log.Printf("Data retention cleanup failed: %v", err)
 	} else {
 		log.Printf("Data retention: cleaned up data older than %d days", retentionDays)
+	}
+
+	// Clean up old replay files
+	cutoffDate := time.Now().AddDate(0, 0, -retentionDays).Format("2006-01-02")
+	if err := replayStore.CleanupBefore(cutoffDate); err != nil {
+		log.Printf("Replay cleanup failed: %v", err)
 	}
 }

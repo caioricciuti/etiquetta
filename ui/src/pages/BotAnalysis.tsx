@@ -12,7 +12,7 @@ import {
   ChartLegendContent,
   type ChartConfig,
 } from '../components/ui/chart'
-import { Bot, ShieldAlert, ShieldCheck, AlertTriangle, Users } from 'lucide-react'
+import { Bot, ShieldAlert, ShieldCheck, AlertTriangle, Users, Brain } from 'lucide-react'
 import { Line, LineChart, XAxis, YAxis, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar } from 'recharts'
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -20,6 +20,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   good_bot: 'Good Bots',
   suspicious: 'Suspicious',
   bad_bot: 'Bad Bots',
+  ai_crawler: 'AI Crawlers',
 }
 
 const SIGNAL_LABELS: Record<string, string> = {
@@ -41,12 +42,14 @@ const SIGNAL_LABELS: Record<string, string> = {
   phantom: 'PhantomJS',
   selenium: 'Selenium',
   no_languages: 'No Languages',
+  known_ai_crawler: 'AI Crawler',
 }
 
 const CATEGORY_BADGE_STYLES: Record<string, string> = {
   good_bot: 'bg-blue-500/15 text-blue-600 dark:text-blue-400',
   bad_bot: 'bg-red-500/15 text-red-600 dark:text-red-400',
   suspicious: 'bg-orange-500/15 text-orange-600 dark:text-orange-400',
+  ai_crawler: 'bg-purple-500/15 text-purple-600 dark:text-purple-400',
 }
 
 const pieChartConfig = {
@@ -55,6 +58,7 @@ const pieChartConfig = {
   good_bot: { label: 'Good Bots', color: 'hsl(217, 91%, 60%)' },
   suspicious: { label: 'Suspicious', color: 'hsl(38, 92%, 50%)' },
   bad_bot: { label: 'Bad Bots', color: 'hsl(0, 84%, 60%)' },
+  ai_crawler: { label: 'AI Crawlers', color: 'hsl(262, 83%, 58%)' },
 } satisfies ChartConfig
 
 const areaChartConfig = {
@@ -62,6 +66,7 @@ const areaChartConfig = {
   good_bots: { label: 'Good Bots', color: 'hsl(217, 91%, 60%)' },
   suspicious: { label: 'Suspicious', color: 'hsl(38, 92%, 50%)' },
   bad_bots: { label: 'Bad Bots', color: 'hsl(0, 84%, 60%)' },
+  ai_crawlers: { label: 'AI Crawlers', color: 'hsl(262, 83%, 58%)' },
 } satisfies ChartConfig
 
 const barChartConfig = {
@@ -101,6 +106,7 @@ export function BotAnalysis() {
   const goodBotEvents = data?.categories?.find(c => c.category === 'good_bot')?.events || 0
   const badBotEvents = data?.categories?.find(c => c.category === 'bad_bot')?.events || 0
   const suspiciousEvents = data?.categories?.find(c => c.category === 'suspicious')?.events || 0
+  const aiCrawlerEvents = data?.categories?.find(c => c.category === 'ai_crawler')?.events || 0
   const botPercentage = totalEvents > 0 ? ((totalEvents - humanEvents) / totalEvents * 100).toFixed(1) : '0'
 
   const pieData = data?.categories?.map(c => ({
@@ -125,11 +131,11 @@ export function BotAnalysis() {
 
       {/* Stats Cards */}
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCardSkeleton /><StatCardSkeleton /><StatCardSkeleton /><StatCardSkeleton />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <StatCardSkeleton /><StatCardSkeleton /><StatCardSkeleton /><StatCardSkeleton /><StatCardSkeleton />
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <Card className="transition-all hover:shadow-md hover:border-primary/20">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
@@ -167,6 +173,20 @@ export function BotAnalysis() {
                 </div>
                 <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
                   <ShieldCheck className="h-5 w-5 text-blue-500" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="transition-all hover:shadow-md hover:border-primary/20">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">AI Crawlers</p>
+                  <p className="text-2xl font-bold mt-1">{formatNumber(aiCrawlerEvents)}</p>
+                </div>
+                <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+                  <Brain className="h-5 w-5 text-purple-500" />
                 </div>
               </div>
             </CardContent>
@@ -264,6 +284,7 @@ export function BotAnalysis() {
                 <Line type="monotone" dataKey="good_bots" stroke="var(--color-good_bots)" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="suspicious" stroke="var(--color-suspicious)" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="bad_bots" stroke="var(--color-bad_bots)" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="ai_crawlers" stroke="var(--color-ai_crawlers)" strokeWidth={2} dot={false} />
               </LineChart>
             </ChartContainer>
           ) : (

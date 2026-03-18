@@ -511,6 +511,74 @@ func (db *DB) Migrate() error {
 				CREATE INDEX IF NOT EXISTS idx_ad_spend_connection ON ad_spend_daily(connection_id);
 			`,
 		},
+		{
+			version: 18,
+			sql: `
+				-- Import jobs tracking
+				CREATE TABLE IF NOT EXISTS import_jobs (
+					id VARCHAR PRIMARY KEY,
+					source VARCHAR NOT NULL,
+					status VARCHAR NOT NULL DEFAULT 'pending',
+					domain VARCHAR NOT NULL,
+					file_name VARCHAR,
+					file_size BIGINT DEFAULT 0,
+					rows_total BIGINT DEFAULT 0,
+					rows_imported BIGINT DEFAULT 0,
+					rows_skipped BIGINT DEFAULT 0,
+					error_message VARCHAR,
+					column_mapping VARCHAR DEFAULT '{}',
+					warnings VARCHAR DEFAULT '[]',
+					started_at BIGINT,
+					completed_at BIGINT,
+					created_by VARCHAR NOT NULL,
+					created_at BIGINT NOT NULL
+				);
+
+				-- Mark imported events for rollback
+				ALTER TABLE events ADD COLUMN IF NOT EXISTS import_id VARCHAR;
+				CREATE INDEX IF NOT EXISTS idx_events_import_id ON events(import_id);
+			`,
+		},
+		{
+			version: 19,
+			sql: `
+				-- Session recordings metadata
+				CREATE TABLE IF NOT EXISTS session_recordings (
+					session_id VARCHAR PRIMARY KEY,
+					domain VARCHAR NOT NULL,
+					visitor_hash VARCHAR NOT NULL,
+					start_time BIGINT NOT NULL,
+					duration BIGINT DEFAULT 0,
+					pages INTEGER DEFAULT 1,
+					first_url VARCHAR,
+					device_type VARCHAR,
+					browser_name VARCHAR,
+					os_name VARCHAR,
+					geo_country VARCHAR,
+					screen_width INTEGER,
+					screen_height INTEGER,
+					size_bytes BIGINT DEFAULT 0,
+					events_count INTEGER DEFAULT 0,
+					status VARCHAR DEFAULT 'recording',
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_recordings_domain_time ON session_recordings(domain, start_time);
+				CREATE INDEX IF NOT EXISTS idx_recordings_visitor ON session_recordings(visitor_hash);
+				CREATE INDEX IF NOT EXISTS idx_recordings_status ON session_recordings(status);
+
+				-- Replay settings
+				INSERT INTO settings (key, value, updated_at) VALUES
+					('replay_enabled', 'false', epoch_ms(now())),
+					('replay_sample_rate', '10', epoch_ms(now())),
+					('replay_mask_text', 'true', epoch_ms(now())),
+					('replay_mask_inputs', 'true', epoch_ms(now())),
+					('replay_max_duration_sec', '1800', epoch_ms(now())),
+					('replay_storage_quota_mb', '5120', epoch_ms(now()))
+				ON CONFLICT (key) DO NOTHING;
+			`,
+		},
 	}
 
 	for _, m := range migrations {

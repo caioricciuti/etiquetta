@@ -112,6 +112,12 @@ export interface BotTimeseries {
   suspicious: number
   bad_bots: number
   good_bots: number
+  ai_crawlers: number
+}
+
+export interface AICrawlerSettings {
+  known_crawlers: string[]
+  rules: Record<string, 'allow' | 'block'>
 }
 
 export interface BotDetail {
@@ -364,7 +370,9 @@ export interface AuditLogResponse {
 
 // Tag Manager types
 export type TagType = 'etiquetta_event' | 'custom_html' | 'ga4' | 'meta_pixel' | 'google_ads' | 'linkedin' | 'tiktok'
-export type TriggerType = 'page_load' | 'dom_ready' | 'click_all' | 'click_specific' | 'scroll_depth' | 'custom_event' | 'timer' | 'history_change' | 'form_submit'
+export type TriggerType = 'page_load' | 'dom_ready' | 'click_all' | 'click_specific' | 'scroll_depth' | 'custom_event' | 'timer' | 'history_change' | 'form_submit' | 'element_visibility'
+
+export type SelectorMatchType = 'css' | 'id' | 'text' | 'data_attr' | 'link_url'
 export type VariableType = 'data_layer' | 'url_param' | 'cookie' | 'dom_element' | 'js_variable' | 'constant' | 'referrer' | 'page_url' | 'page_path' | 'page_hostname'
 
 export interface TMContainer {
@@ -516,4 +524,99 @@ export interface AdAttributionRow {
   ad_clicks: number
   cpc: number
   cpa: number
+}
+
+// Migration types
+export type MigrateSource = 'ga4_bigquery' | 'ga4_csv' | 'plausible' | 'matomo' | 'umami' | 'csv' | 'gtm'
+export type MigrateJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'rolled_back'
+
+export interface ColumnMapping {
+  source_column: string
+  target_field: string | null
+  auto_detected: boolean
+  sample_values: string[]
+}
+
+export interface MigrateAnalysis {
+  analysis_id: string
+  source: MigrateSource
+  columns: string[]
+  sample_rows: string[][]
+  row_estimate: number
+  date_range: { start: string; end: string } | null
+  suggested_mapping: Record<string, string>
+  warnings: string[]
+}
+
+export interface MigrateJob {
+  id: string
+  source: MigrateSource
+  domain: string
+  status: MigrateJobStatus
+  file_name: string
+  file_size: number
+  rows_total: number
+  rows_imported: number
+  rows_skipped: number
+  error_message: string | null
+  warnings: string[]
+  started_at: number | null
+  completed_at: number | null
+  created_at: number
+}
+
+export interface GtmConvertResult {
+  container: { tags: number; triggers: number; variables: number }
+  warnings: string[]
+  container_data: unknown
+}
+
+// Session Replay types
+export interface SessionRecording {
+  session_id: string
+  domain: string
+  visitor_hash: string
+  start_time: number
+  duration: number
+  pages: number
+  first_url: string
+  device_type: string
+  browser_name: string
+  os_name: string
+  geo_country: string
+  screen_width: number
+  screen_height: number
+  size_bytes: number
+  events_count: number
+  status: string
+  created_at: number
+}
+
+export interface ReplayListResponse {
+  recordings: SessionRecording[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface ReplayData {
+  session_id: string
+  events: unknown[]
+}
+
+export interface ReplayStats {
+  total_recordings: number
+  total_size_bytes: number
+  disk_usage_bytes: number
+  quota_bytes: number
+  quota_mb: number
+}
+
+export interface ReplaySettings {
+  enabled: boolean
+  sample_rate: number
+  mask_text: boolean
+  mask_inputs: boolean
+  max_duration_sec: number
+  storage_quota_mb: number
 }
