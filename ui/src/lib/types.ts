@@ -1,3 +1,12 @@
+export interface ApiKey {
+  id: string
+  name: string
+  key_prefix: string
+  created_at: number
+  last_used_at: number | null
+  revoked_at: number | null
+}
+
 export interface OverviewStats {
   total_events: number
   unique_visitors: number
@@ -644,6 +653,22 @@ export interface ReplayListResponse {
 export interface ReplayData {
   session_id: string
   events: unknown[]
+  metadata: SessionRecording
+}
+
+export interface SessionEvent {
+  id: string
+  timestamp: number
+  event_type: string
+  event_name: string
+  url: string
+  path: string
+  page_title: string
+  referrer_url: string
+  utm_source: string
+  utm_medium: string
+  utm_campaign: string
+  props: string
 }
 
 export interface ReplayStats {

@@ -16,6 +16,7 @@ import {
   UsersSettings,
   TrackingSettings,
   ConnectionsSettings,
+  ApiKeysSettings,
 } from './pages/settings'
 import { ConsentDashboard, ConsentConfig } from './pages/consent'
 import { PrivacyCenter } from './pages/privacy'
@@ -35,6 +36,7 @@ import {
   BarChart3,
   Settings as SettingsIcon,
   Key,
+  KeyRound,
   LogOut,
   Moon,
   Sun,
@@ -269,6 +271,7 @@ function AppSidebar() {
     { path: '/settings/email', name: 'Email', icon: Mail, adminOnly: true },
     { path: '/settings/geoip', name: 'GeoIP', icon: MapPin, adminOnly: true },
     { path: '/settings/connections', name: 'Connections', icon: Cable, adminOnly: true },
+    { path: '/settings/api-keys', name: 'API Keys', icon: KeyRound, adminOnly: true },
     { path: '/settings/account', name: 'Account', icon: User },
     { path: '/settings/users', name: 'Users', icon: UsersIcon, adminOnly: true, pro: 'multi_user' },
     { path: '/settings/license', name: 'License', icon: Key },
@@ -422,6 +425,7 @@ function AppLayout() {
               <Route path="/settings/email" element={<EmailSettings />} />
               <Route path="/settings/geoip" element={<GeoIPSettings />} />
               <Route path="/settings/connections" element={<ConnectionsSettings />} />
+              <Route path="/settings/api-keys" element={<ApiKeysSettings />} />
               <Route path="/settings/account" element={<AccountSettings />} />
               <Route path="/settings/users" element={<UsersSettings />} />
               <Route path="/privacy" element={<PrivacyCenter />} />

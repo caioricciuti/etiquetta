@@ -111,8 +111,15 @@ func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 
 	html := string(body)
 
-	// Inject <base> tag after <head> so relative URLs resolve correctly
-	html = injectBaseTag(html, parsed)
+	// Build proxy base path for sub-resource rewriting
+	proxyBase := fmt.Sprintf("/_etq_proxy/%s/%s/%s/", token, parsed.Scheme, parsed.Host)
+	originalOrigin := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+
+	// Inject <base> tag pointing to proxy path so relative URLs go through proxy
+	html = injectBaseTag(html, proxyBase)
+
+	// Rewrite absolute URLs pointing to the target origin
+	html = rewriteAbsoluteURLs(html, originalOrigin, proxyBase)
 
 	// Strip CSP meta tags that would block our injected script
 	html = stripCSPMeta(html)
@@ -124,6 +131,95 @@ func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Write([]byte(html))
+}
+
+// PickProxyResource proxies sub-resources (CSS, JS, images) for the element picker.
+// Route: GET /_etq_proxy/{token}/{scheme}/{host}/*
+func (h *Handlers) PickProxyResource(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	scheme := chi.URLParam(r, "scheme")
+	host := chi.URLParam(r, "host")
+	rest := chi.URLParam(r, "*")
+
+	// Validate token
+	if entry, ok := debugTokens.Load(token); ok {
+		de := entry.(debugTokenEntry)
+		if time.Now().After(de.expiresAt) {
+			debugTokens.Delete(token)
+			writeError(w, http.StatusForbidden, "Token expired")
+			return
+		}
+	} else {
+		writeError(w, http.StatusForbidden, "Invalid token")
+		return
+	}
+
+	// Validate scheme
+	if scheme != "http" && scheme != "https" {
+		writeError(w, http.StatusBadRequest, "Invalid scheme")
+		return
+	}
+
+	// SSRF protection
+	if isPrivateHost(host) {
+		writeError(w, http.StatusBadRequest, "Cannot proxy private/local addresses")
+		return
+	}
+
+	// Reconstruct target URL
+	targetURL := fmt.Sprintf("%s://%s/%s", scheme, host, rest)
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	// Fetch the resource
+	req, err := http.NewRequestWithContext(r.Context(), "GET", targetURL, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid URL")
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Failed to fetch resource")
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read body with size limit (10MB)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Failed to read response")
+		return
+	}
+
+	ct := resp.Header.Get("Content-Type")
+
+	// If HTML (navigated link), process like PickProxy
+	if strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml") {
+		html := string(body)
+		proxyBase := fmt.Sprintf("/_etq_proxy/%s/%s/%s/", token, scheme, host)
+		originalOrigin := fmt.Sprintf("%s://%s", scheme, host)
+
+		html = injectBaseTag(html, proxyBase)
+		html = rewriteAbsoluteURLs(html, originalOrigin, proxyBase)
+		html = stripCSPMeta(html)
+		html = injectPickerScript(html)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store")
+		w.Write([]byte(html))
+		return
+	}
+
+	// Non-HTML: pass through with original Content-Type
+	if ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Write(body)
 }
 
 // isPrivateHost returns true if the hostname resolves to a private/loopback address
@@ -151,10 +247,9 @@ func isPrivateHost(host string) bool {
 	return false
 }
 
-// injectBaseTag inserts a <base href> after <head> so relative URLs resolve to the target origin
-func injectBaseTag(html string, u *url.URL) string {
-	baseHref := fmt.Sprintf("%s://%s/", u.Scheme, u.Host)
-	baseTag := fmt.Sprintf(`<base href="%s">`, baseHref)
+// injectBaseTag inserts a <base href> after <head> pointing to the proxy path
+func injectBaseTag(html string, proxyBase string) string {
+	baseTag := fmt.Sprintf(`<base href="%s">`, proxyBase)
 	// Try to insert after <head> or <head ...>
 	re := regexp.MustCompile(`(?i)(<head[^>]*>)`)
 	if re.MatchString(html) {
@@ -162,6 +257,58 @@ func injectBaseTag(html string, u *url.URL) string {
 	}
 	// Fallback: prepend to HTML
 	return baseTag + html
+}
+
+// rewriteAbsoluteURLs rewrites src/href attributes pointing to the original origin to go through the proxy
+var reAbsoluteAttr = regexp.MustCompile(`((?:src|href)\s*=\s*)(["'])` + `(https?://[^"']+)` + `(["'])`)
+var reSrcsetURL = regexp.MustCompile(`((?:srcset)\s*=\s*["'])([^"']+)(["'])`)
+
+func rewriteAbsoluteURLs(html, originalOrigin, proxyBase string) string {
+	// Rewrite src="..." and href="..."
+	html = reAbsoluteAttr.ReplaceAllStringFunc(html, func(match string) string {
+		sub := reAbsoluteAttr.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		attr, quote, urlStr, closeQuote := sub[1], sub[2], sub[3], sub[4]
+		// Skip anchors, javascript:, data: URIs
+		lower := strings.ToLower(strings.TrimSpace(urlStr))
+		if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "#") {
+			return match
+		}
+		if strings.HasPrefix(urlStr, originalOrigin+"/") {
+			path := strings.TrimPrefix(urlStr, originalOrigin+"/")
+			return attr + quote + proxyBase + path + closeQuote
+		}
+		if strings.HasPrefix(urlStr, originalOrigin+"?") {
+			rest := strings.TrimPrefix(urlStr, originalOrigin)
+			return attr + quote + proxyBase + rest + closeQuote
+		}
+		if urlStr == originalOrigin {
+			return attr + quote + proxyBase + closeQuote
+		}
+		return match
+	})
+
+	// Rewrite srcset="..."
+	html = reSrcsetURL.ReplaceAllStringFunc(html, func(match string) string {
+		sub := reSrcsetURL.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		prefix, srcsetVal, suffix := sub[1], sub[2], sub[3]
+		parts := strings.Split(srcsetVal, ",")
+		for i, part := range parts {
+			fields := strings.Fields(strings.TrimSpace(part))
+			if len(fields) >= 1 && strings.HasPrefix(fields[0], originalOrigin+"/") {
+				fields[0] = proxyBase + strings.TrimPrefix(fields[0], originalOrigin+"/")
+				parts[i] = " " + strings.Join(fields, " ")
+			}
+		}
+		return prefix + strings.Join(parts, ",") + suffix
+	})
+
+	return html
 }
 
 // stripCSPMeta removes <meta http-equiv="Content-Security-Policy"> tags
@@ -1971,7 +2118,7 @@ document.head.appendChild(style);
 // Banner
 var banner=document.createElement("div");
 banner.className="__etq_pick_banner";
-banner.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M22 2L15 22l-3-9-9-3z"/></svg><span style="flex:1;font-weight:600;">Etiquetta Element Picker</span><span style="opacity:0.7;font-size:12px;">Hover to highlight, click to select</span>';
+banner.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M22 2L15 22l-3-9-9-3z"/></svg><span style="flex:1;font-weight:600;">Etiquetta Element Picker</span><span style="opacity:0.7;font-size:12px;">Click to select, double-click link to navigate</span>';
 var cancelBtn=document.createElement("button");
 cancelBtn.className="cancel";cancelBtn.textContent="Cancel";
 cancelBtn.onclick=function(){cleanup();if(!isIframe)window.close();else try{target.postMessage({type:"etiquetta_picker_cancel"},"*");}catch(e){}};
@@ -2107,10 +2254,27 @@ el.classList.remove("__etq_pick_hl");
 },800);
 }
 
+function onDblClick(e){
+if(!active)return;
+if(banner.contains(e.target))return;
+e.preventDefault();
+e.stopPropagation();
+e.stopImmediatePropagation();
+var el=e.target;
+while(el&&el!==document.body){
+if(el.tagName==="A"&&el.href){
+try{target.postMessage({type:"etiquetta_picker_navigate",url:el.href},"*");}catch(err){}
+return;
+}
+el=el.parentElement;
+}
+}
+
 function cleanup(){
 active=false;
 document.removeEventListener("mousemove",onMouseMove,true);
 document.removeEventListener("click",onClick,true);
+document.removeEventListener("dblclick",onDblClick,true);
 if(lastHighlighted)lastHighlighted.classList.remove("__etq_pick_hl");
 if(banner.parentNode)banner.parentNode.removeChild(banner);
 if(tooltip.parentNode)tooltip.parentNode.removeChild(tooltip);
@@ -2119,6 +2283,7 @@ if(style.parentNode)style.parentNode.removeChild(style);
 
 document.addEventListener("mousemove",onMouseMove,true);
 document.addEventListener("click",onClick,true);
+document.addEventListener("dblclick",onDblClick,true);
 
 // Listen for cleanup signal from parent
 window.addEventListener("message",function(e){

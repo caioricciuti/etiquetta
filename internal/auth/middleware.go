@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 type contextKey string
@@ -12,9 +13,14 @@ const (
 	UserContextKey contextKey = "user"
 )
 
+// APIKeyValidator validates an API key and returns user claims.
+// Implemented outside the auth package (e.g. in the API layer) where DB access is available.
+type APIKeyValidator func(key string) (*Claims, error)
+
 // Middleware creates authentication middleware
 type Middleware struct {
-	auth *Auth
+	auth            *Auth
+	validateAPIKey  APIKeyValidator
 }
 
 // NewMiddleware creates a new auth middleware
@@ -22,7 +28,13 @@ func NewMiddleware(auth *Auth) *Middleware {
 	return &Middleware{auth: auth}
 }
 
-// RequireAuth ensures the request has a valid authentication token
+// SetAPIKeyValidator registers a callback for validating API keys (etq_ prefixed tokens).
+func (m *Middleware) SetAPIKeyValidator(v APIKeyValidator) {
+	m.validateAPIKey = v
+}
+
+// RequireAuth ensures the request has a valid authentication token.
+// Supports both JWT tokens and API keys (etq_ prefix).
 func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := GetTokenFromRequest(r)
@@ -31,10 +43,21 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := m.auth.ValidateToken(token)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid or expired token")
-			return
+		var claims *Claims
+		var err error
+
+		if strings.HasPrefix(token, "etq_") && m.validateAPIKey != nil {
+			claims, err = m.validateAPIKey(token)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid API key")
+				return
+			}
+		} else {
+			claims, err = m.auth.ValidateToken(token)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
 		}
 
 		// Add claims to context

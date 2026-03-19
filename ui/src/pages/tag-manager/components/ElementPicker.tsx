@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from '@/components/ui/dialog'
 import {
   Loader2,
@@ -112,10 +113,9 @@ export function ElementPicker({ open, onOpenChange, containerId, domain, onSelec
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, containerId, domain])
 
-  // Navigate to a new URL within the picker
-  function handleNavigate() {
-    if (!token || !urlInput.trim()) return
-    const url = ensureProtocol(urlInput.trim())
+  // Navigate to a URL within the picker
+  function navigateToUrl(url: string) {
+    if (!token) return
     setUrlInput(url)
     const proxyUrl = `/api/tagmanager/pick-proxy?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`
     setIframeUrl(proxyUrl)
@@ -124,6 +124,11 @@ export function ElementPicker({ open, onOpenChange, containerId, domain, onSelec
     setSuggestions([])
     setElementInfo(null)
     setHoverInfo(null)
+  }
+
+  function handleNavigate() {
+    if (!urlInput.trim()) return
+    navigateToUrl(ensureProtocol(urlInput.trim()))
   }
 
   // Handle iframe load event — start timeout for picker_ready
@@ -167,11 +172,17 @@ export function ElementPicker({ open, onOpenChange, containerId, domain, onSelec
         setElementInfo({ tag: data.tag, text: data.text })
         setStatus('selected')
         break
+      case 'etiquetta_picker_navigate':
+        if (data.url && typeof data.url === 'string') {
+          navigateToUrl(data.url)
+        }
+        break
       case 'etiquetta_picker_cancel':
         onOpenChange(false)
         break
     }
-  }, [onOpenChange])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onOpenChange, token])
 
   useEffect(() => {
     window.addEventListener('message', handleMessage)
@@ -216,6 +227,7 @@ export function ElementPicker({ open, onOpenChange, containerId, domain, onSelec
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex flex-col max-w-[100vw] max-h-[100vh] w-screen h-screen p-0 rounded-none border-0 gap-0 [&>button]:hidden">
+        <DialogTitle className="sr-only">Element Picker</DialogTitle>
         {/* Top toolbar */}
         <div className="flex items-center gap-3 px-4 py-2 border-b bg-background shrink-0">
           <Crosshair className="h-4 w-4 text-primary shrink-0" />

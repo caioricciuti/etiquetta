@@ -1,0 +1,109 @@
+#cloud-config
+# ============================================
+# Etiquetta — Hetzner Cloud-init
+# ============================================
+#
+# Usage:
+#   1. Create a Hetzner Cloud server (Ubuntu 22.04+, Debian 12+)
+#   2. Paste this file into the "Cloud config" (User data) field
+#   3. Replace YOUR_DOMAIN below with your actual domain
+#   4. Point your domain's DNS A record to the server IP
+#   5. Boot the server — everything is automatic
+#
+# What this does:
+#   - Installs Etiquetta via the official installer
+#   - Sets up systemd service with security hardening
+#   - Installs Caddy for automatic HTTPS (Let's Encrypt)
+#   - Configures UFW firewall (only 22, 80, 443 open)
+#   - Creates dedicated etiquetta system user
+#
+# After boot, visit https://YOUR_DOMAIN to run the setup wizard.
+
+# ── Configuration ─────────────────────────────────────────
+# CHANGE THIS to your actual domain:
+write_files:
+  - path: /etc/etiquetta/domain
+    content: YOUR_DOMAIN
+    owner: root:root
+    permissions: "0644"
+
+  - path: /etc/caddy/Caddyfile
+    content: |
+      {$ETIQUETTA_DOMAIN} {
+        reverse_proxy localhost:3456
+
+        # Required for SSE (live dashboard updates)
+        @sse path /api/events/stream
+        handle @sse {
+          reverse_proxy localhost:3456 {
+            flush_interval -1
+          }
+        }
+      }
+    owner: root:root
+    permissions: "0644"
+
+  - path: /etc/systemd/system/caddy-env.conf
+    content: |
+      [Service]
+      EnvironmentFile=/etc/etiquetta/caddy-env
+    owner: root:root
+    permissions: "0644"
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - ufw
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+
+runcmd:
+  # ── Read domain config ──
+  - export ETIQUETTA_DOMAIN=$(cat /etc/etiquetta/domain)
+  - echo "ETIQUETTA_DOMAIN=${ETIQUETTA_DOMAIN}" > /etc/etiquetta/caddy-env
+
+  # ── Firewall ──
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
+
+  # ── Install Caddy ──
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update
+  - apt-get install -y caddy
+
+  # ── Install Etiquetta ──
+  - curl -sSL https://raw.githubusercontent.com/caioricciuti/etiquetta/main/install.sh | bash -s -- --with-systemd
+
+  # ── Configure Etiquetta for reverse proxy ──
+  - |
+    mkdir -p /etc/systemd/system/etiquetta.service.d
+    cat > /etc/systemd/system/etiquetta.service.d/override.conf << 'EOF'
+    [Service]
+    Environment=ETIQUETTA_SECURE_COOKIES=true
+    EOF
+
+  # ── Configure Caddy with domain ──
+  - |
+    mkdir -p /etc/systemd/system/caddy.service.d
+    cp /etc/systemd/system/caddy-env.conf /etc/systemd/system/caddy.service.d/env.conf
+
+  # ── Start services ──
+  - systemctl daemon-reload
+  - systemctl enable --now etiquetta
+  - systemctl enable --now caddy
+
+  # ── Done ──
+  - echo "Etiquetta deployment complete. Visit https://${ETIQUETTA_DOMAIN} to set up."
+
+final_message: |
+  Etiquetta is ready!
+  Visit https://$(cat /etc/etiquetta/domain) to run the setup wizard.
+  Setup took $UPTIME seconds.

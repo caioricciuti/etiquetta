@@ -579,6 +579,25 @@ func (db *DB) Migrate() error {
 				ON CONFLICT (key) DO NOTHING;
 			`,
 		},
+		{
+			version: 20,
+			sql: `
+				-- API keys for external integrations (WordPress, etc.)
+				CREATE TABLE IF NOT EXISTS api_keys (
+					id VARCHAR PRIMARY KEY,
+					user_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					key_hash VARCHAR NOT NULL,
+					key_prefix VARCHAR NOT NULL,
+					created_at BIGINT NOT NULL,
+					last_used_at BIGINT,
+					revoked_at BIGINT
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+				CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+			`,
+		},
 	}
 
 	for _, m := range migrations {

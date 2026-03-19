@@ -91,6 +91,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		migrateManager: migrateManager,
 	}
 
+	// Wire up API key validation so Bearer etq_... tokens work through RequireAuth
+	authMiddleware.SetAPIKeyValidator(h.ValidateAPIKey)
+
 	// Set the replay store for handlers
 	replayStore = replayMgr
 
@@ -218,6 +221,11 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
 			r.Get("/stats/compare", h.GetStatsCompare)                   // Period comparison
 
+			// API token management
+			r.Post("/tokens", h.CreateAPIToken)
+			r.Get("/tokens", h.ListAPITokens)
+			r.Delete("/tokens/{id}", h.RevokeAPIToken)
+
 			// Domain management
 			r.Get("/domains", h.ListDomains)
 			r.Post("/domains", h.CreateDomain)
@@ -278,7 +286,6 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Get("/tagmanager/containers/{id}/export", h.ExportContainer)
 				r.Post("/tagmanager/containers/{id}/import", h.ImportContainer)
 				r.Post("/tagmanager/containers/{id}/preview-token", h.PreviewToken)
-				r.Get("/tagmanager/pick-proxy", h.PickProxy)
 
 				// Tag CRUD
 				r.Get("/tagmanager/containers/{cid}/tags", h.ListTags)
@@ -385,10 +392,15 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Get("/replays/settings", h.GetReplaySettings)
 				r.Put("/replays/settings", h.UpdateReplaySettings)
 				r.Get("/replays/{sessionId}", h.GetReplay)
+				r.Get("/replays/{sessionId}/events", h.GetSessionEvents)
 				r.Delete("/replays/{sessionId}", h.DeleteReplay)
 			})
 		})
 	})
+
+	// Element Picker proxy (token-validated, no auth middleware needed)
+	r.Get("/api/tagmanager/pick-proxy", h.PickProxy)
+	r.With(RateLimit(200, time.Minute)).Get("/_etq_proxy/{token}/{scheme}/{host}/*", h.PickProxyResource)
 
 	// Serve static UI files from embedded filesystem
 	fileServer := http.FileServer(http.FS(uiFS))

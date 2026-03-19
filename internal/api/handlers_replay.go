@@ -120,49 +120,60 @@ func (h *Handlers) ListReplays(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	query := `SELECT session_id, domain, visitor_hash, start_time, duration, pages,
-		first_url, device_type, browser_name, os_name, geo_country,
-		screen_width, screen_height, size_bytes, events_count, status, created_at
-		FROM session_recordings WHERE 1=1`
+	// Build WHERE clauses once, reuse for count + select
+	where := " WHERE 1=1"
 	var args []interface{}
 
 	if domain != "" {
-		query += " AND domain = ?"
+		where += " AND domain = ?"
 		args = append(args, domain)
 	}
 	if from != "" {
 		if ts, err := strconv.ParseInt(from, 10, 64); err == nil {
-			query += " AND start_time >= ?"
+			where += " AND start_time >= ?"
 			args = append(args, ts)
 		}
 	}
 	if to != "" {
 		if ts, err := strconv.ParseInt(to, 10, 64); err == nil {
-			query += " AND start_time <= ?"
+			where += " AND start_time <= ?"
 			args = append(args, ts)
+		}
+	}
+	if v := r.URL.Query().Get("device_type"); v != "" {
+		where += " AND device_type = ?"
+		args = append(args, v)
+	}
+	if v := r.URL.Query().Get("browser_name"); v != "" {
+		where += " AND browser_name = ?"
+		args = append(args, v)
+	}
+	if v := r.URL.Query().Get("os_name"); v != "" {
+		where += " AND os_name = ?"
+		args = append(args, v)
+	}
+	if v := r.URL.Query().Get("min_duration"); v != "" {
+		if ms, err := strconv.ParseInt(v, 10, 64); err == nil {
+			where += " AND duration >= ?"
+			args = append(args, ms)
+		}
+	}
+	if v := r.URL.Query().Get("max_duration"); v != "" {
+		if ms, err := strconv.ParseInt(v, 10, 64); err == nil {
+			where += " AND duration <= ?"
+			args = append(args, ms)
 		}
 	}
 
 	// Count total
-	countQuery := "SELECT COUNT(*) FROM session_recordings WHERE 1=1"
-	if domain != "" {
-		countQuery += " AND domain = ?"
-	}
-	if from != "" {
-		if _, err := strconv.ParseInt(from, 10, 64); err == nil {
-			countQuery += " AND start_time >= ?"
-		}
-	}
-	if to != "" {
-		if _, err := strconv.ParseInt(to, 10, 64); err == nil {
-			countQuery += " AND start_time <= ?"
-		}
-	}
-
 	var total int
-	h.db.Conn().QueryRow(countQuery, args...).Scan(&total)
+	h.db.Conn().QueryRow("SELECT COUNT(*) FROM session_recordings"+where, args...).Scan(&total)
 
-	query += " ORDER BY start_time DESC LIMIT ? OFFSET ?"
+	// Fetch page
+	query := `SELECT session_id, domain, visitor_hash, start_time, duration, pages,
+		first_url, device_type, browser_name, os_name, geo_country,
+		screen_width, screen_height, size_bytes, events_count, status, created_at
+		FROM session_recordings` + where + " ORDER BY start_time DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := h.db.Conn().Query(query, args...)
@@ -222,15 +233,24 @@ type sessionRecording struct {
 func (h *Handlers) GetReplay(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 
-	// Look up domain from metadata
-	var domain string
-	err := h.db.Conn().QueryRow("SELECT domain FROM session_recordings WHERE session_id = ?", sessionID).Scan(&domain)
+	// Load full metadata
+	var rec sessionRecording
+	err := h.db.Conn().QueryRow(`SELECT session_id, domain, visitor_hash, start_time, duration, pages,
+		first_url, device_type, browser_name, os_name, geo_country,
+		screen_width, screen_height, size_bytes, events_count, status, created_at
+		FROM session_recordings WHERE session_id = ?`, sessionID).Scan(
+		&rec.SessionID, &rec.Domain, &rec.VisitorHash, &rec.StartTime,
+		&rec.Duration, &rec.Pages, &rec.FirstURL, &rec.DeviceType,
+		&rec.BrowserName, &rec.OSName, &rec.GeoCountry,
+		&rec.ScreenWidth, &rec.ScreenHeight, &rec.SizeBytes,
+		&rec.EventsCount, &rec.Status, &rec.CreatedAt,
+	)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
 		return
 	}
 
-	events, err := replayStore.ReadEvents(domain, sessionID)
+	events, err := replayStore.ReadEvents(rec.Domain, sessionID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording data not found"})
 		return
@@ -239,7 +259,54 @@ func (h *Handlers) GetReplay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"session_id": sessionID,
 		"events":     events,
+		"metadata":   rec,
 	})
+}
+
+// sessionEvent represents an analytics event from the events table.
+type sessionEvent struct {
+	ID          string `json:"id"`
+	Timestamp   int64  `json:"timestamp"`
+	EventType   string `json:"event_type"`
+	EventName   string `json:"event_name"`
+	URL         string `json:"url"`
+	Path        string `json:"path"`
+	PageTitle   string `json:"page_title"`
+	ReferrerURL string `json:"referrer_url"`
+	UTMSource   string `json:"utm_source"`
+	UTMMedium   string `json:"utm_medium"`
+	UTMCampaign string `json:"utm_campaign"`
+	Props       string `json:"props"`
+}
+
+// GetSessionEvents returns analytics events for a given session.
+// GET /api/replays/{sessionId}/events
+func (h *Handlers) GetSessionEvents(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+
+	rows, err := h.db.Conn().Query(`SELECT id, timestamp, event_type,
+		COALESCE(event_name, ''), url, path,
+		COALESCE(page_title, ''), COALESCE(referrer_url, ''),
+		COALESCE(utm_source, ''), COALESCE(utm_medium, ''),
+		COALESCE(utm_campaign, ''), COALESCE(props, '{}')
+		FROM events WHERE session_id = ?
+		ORDER BY timestamp ASC LIMIT 500`, sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	events := make([]sessionEvent, 0)
+	for rows.Next() {
+		var ev sessionEvent
+		rows.Scan(&ev.ID, &ev.Timestamp, &ev.EventType, &ev.EventName,
+			&ev.URL, &ev.Path, &ev.PageTitle, &ev.ReferrerURL,
+			&ev.UTMSource, &ev.UTMMedium, &ev.UTMCampaign, &ev.Props)
+		events = append(events, ev)
+	}
+
+	writeJSON(w, http.StatusOK, events)
 }
 
 // DeleteReplay removes a session recording.
