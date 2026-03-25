@@ -81,11 +81,16 @@ func runInit(cmd *cobra.Command, args []string) {
 	// Initialize settings service
 	settingsSvc := settings.New(db.Conn())
 
-	// Generate secret key
-	secretKey := settings.GenerateSecretKey()
-	settingsSvc.Set("secret_key", secretKey)
+	// Get or generate secret key (preserve existing to avoid invalidating JWT sessions)
+	secretKey, _ := settingsSvc.Get("secret_key")
+	if secretKey == "" {
+		secretKey = settings.GenerateSecretKey()
+		settingsSvc.Set("secret_key", secretKey)
+		fmt.Println("Generated secure secret key.")
+	} else {
+		fmt.Println("Secret key already exists, keeping existing.")
+	}
 	settingsSvc.SetMasterKey(secretKey)
-	fmt.Println("Generated secure secret key.")
 
 	// Check if setup is already complete
 	setupComplete, _ := settingsSvc.Get("setup_complete")
@@ -244,7 +249,7 @@ func runInit(cmd *cobra.Command, args []string) {
 		fmt.Println("  <script")
 		fmt.Println("    defer")
 		fmt.Printf("    data-site=\"%s\"\n", siteID)
-		fmt.Printf("    src=\"http://localhost%s/js/script.js\"\n", listenAddr)
+		fmt.Printf("    src=\"http://localhost%s/s.js\"\n", listenAddr)
 		fmt.Println("  ></script>")
 		fmt.Println()
 	}

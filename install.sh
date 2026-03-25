@@ -133,9 +133,8 @@ ExecStart=$INSTALL_DIR/etiquetta serve
 Restart=always
 RestartSec=5
 
-# Environment
+# Environment (read by binary via env var fallbacks)
 Environment=ETIQUETTA_DATA_DIR=$DATA_DIR
-Environment=ETIQUETTA_PORT=3456
 
 # Security hardening
 NoNewPrivileges=true

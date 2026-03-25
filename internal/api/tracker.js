@@ -192,8 +192,10 @@
       ...data
     };
 
+    // Always send bot signals so performance/error events can be correlated
+    event.bot_signals = getBotSignals();
+
     if (withSignals || table === "events") {
-      event.bot_signals = getBotSignals();
       event.has_scroll = BEHAVIOR.scrolled ? 1 : 0;
       event.has_mouse_move = BEHAVIOR.moused ? 1 : 0;
       event.has_click = BEHAVIOR.clicked ? 1 : 0;

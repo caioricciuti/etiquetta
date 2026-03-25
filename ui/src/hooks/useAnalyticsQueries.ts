@@ -270,6 +270,7 @@ export function useComparison(
 function useBotParams() {
   const { dateRange } = useDateRangeStore()
   const { selectedDomainId } = useDomainStore()
+  const { filters } = useFilterStore()
   const { data: domains, isLoading: domainsLoading } = useDomains()
   const selectedDomain = domains?.find((d) => d.id === selectedDomainId)
 
@@ -281,6 +282,7 @@ function useBotParams() {
     params.set('days', '7')
   }
   if (selectedDomain) params.set('domain', selectedDomain.domain)
+  if (filters.bot_filter) params.set('bot_filter', filters.bot_filter)
 
   return { qs: params.toString(), enabled: !domainsLoading }
 }

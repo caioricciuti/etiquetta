@@ -235,7 +235,7 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 			}
 
 		default:
-			event := h.parseEvent(raw, sessionID, enriched, userAgent, ipHash)
+			event := h.parseEvent(raw, sessionID, enriched, userAgent, ipHash, headers)
 			if event != nil {
 				events = append(events, event)
 			}
@@ -260,7 +260,7 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handlers) parseEvent(raw map[string]interface{}, sessionID string, enriched *enrichment.EnrichmentResult, userAgent string, ipHash string) *database.Event {
+func (h *Handlers) parseEvent(raw map[string]interface{}, sessionID string, enriched *enrichment.EnrichmentResult, userAgent string, ipHash string, headers map[string]string) *database.Event {
 	urlStr, _ := raw["url"].(string)
 	parsedURL, _ := url.Parse(urlStr)
 
@@ -293,9 +293,12 @@ func (h *Handlers) parseEvent(raw map[string]interface{}, sessionID string, enri
 	botCategory := enriched.BotCategory
 	botSignals := enriched.BotSignals
 
-	if clientSignals != nil {
-		// Merge server and client bot detection
-		result := bot.CalculateScore(userAgent, clientSignals, enriched.DatacenterIP, nil)
+	// Don't recalculate for known AI crawlers or good bots — server-side
+	// UA detection already classified them correctly. Client signals would
+	// overwrite the category (e.g., GPTBot running JS gets reclassified as bad_bot).
+	if clientSignals != nil && botCategory != bot.CategoryAICrawler && botCategory != bot.CategoryGoodBot {
+		// Merge server and client bot detection, preserving header checks
+		result := bot.CalculateScore(userAgent, clientSignals, enriched.DatacenterIP, enriched.AICrawlerIP, enriched.AICrawlerIPName, headers)
 		botResult = result.Score
 		botCategory = result.Category
 		botSignals = bot.SignalsToJSON(result.Signals)

@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,8 +41,65 @@ var serveCmd = &cobra.Command{
 	Run:   runServe,
 }
 
+var stopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop a running Etiquetta server",
+	Long:  `Stops a detached Etiquetta server by reading its PID file and sending SIGTERM.`,
+	Run:   runStop,
+}
+
 func init() {
 	serveCmd.Flags().BoolVar(&detach, "detach", false, "Run server in background (detached mode)")
+}
+
+func runStop(cmd *cobra.Command, args []string) {
+	pidPath := filepath.Join(dataDir, "etiquetta.pid")
+
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		fmt.Println("No PID file found. Is Etiquetta running in detached mode?")
+		os.Exit(1)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		fmt.Printf("Invalid PID file: %s\n", pidPath)
+		os.Remove(pidPath)
+		os.Exit(1)
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Printf("Process %d not found.\n", pid)
+		os.Remove(pidPath)
+		os.Exit(1)
+	}
+
+	// Check if process is alive
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		fmt.Printf("Process %d is not running (stale PID file). Cleaning up.\n", pid)
+		os.Remove(pidPath)
+		return
+	}
+
+	fmt.Printf("Stopping Etiquetta (PID: %d)...\n", pid)
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		fmt.Printf("Failed to send SIGTERM: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait up to 10 seconds for graceful shutdown
+	for i := 0; i < 20; i++ {
+		time.Sleep(500 * time.Millisecond)
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			fmt.Println("Etiquetta stopped.")
+			os.Remove(pidPath)
+			return
+		}
+	}
+
+	fmt.Println("Process did not stop in time. You may need to kill it manually.")
+	fmt.Printf("  kill -9 %d\n", pid)
 }
 
 func runServe(cmd *cobra.Command, args []string) {

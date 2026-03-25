@@ -153,6 +153,9 @@ func (b *BatchAnalyzer) analyzeZeroInteraction(since time.Time) int {
 			continue
 		}
 		affected, _ := result.RowsAffected()
+		if affected > 0 {
+			b.db.Exec("UPDATE performance SET bot_score = ?, bot_category = ? WHERE session_id = ?", newScore, newCategory, sid)
+		}
 		count += int(affected)
 	}
 
@@ -210,6 +213,9 @@ func (b *BatchAnalyzer) analyzeImpossibleSpeed(since time.Time) int {
 			continue
 		}
 		affected, _ := result.RowsAffected()
+		if affected > 0 {
+			b.db.Exec("UPDATE performance SET bot_score = ?, bot_category = 'bad_bot' WHERE session_id = ?", newScore, sid)
+		}
 		count += int(affected)
 	}
 
@@ -271,6 +277,9 @@ func (b *BatchAnalyzer) analyzePerfectTiming(since time.Time) int {
 			continue
 		}
 		affected, _ := result.RowsAffected()
+		if affected > 0 {
+			b.db.Exec("UPDATE performance SET bot_score = ?, bot_category = ? WHERE session_id = ?", newScore, newCategory, sid)
+		}
 		count += int(affected)
 	}
 
@@ -404,6 +413,9 @@ func (b *BatchAnalyzer) analyzeNoInteractionLongSession(since time.Time) int {
 			continue
 		}
 		affected, _ := result.RowsAffected()
+		if affected > 0 {
+			b.db.Exec("UPDATE performance SET bot_score = ?, bot_category = ? WHERE session_id = ?", newScore, newCategory, sid)
+		}
 		count += int(affected)
 	}
 

@@ -26,7 +26,6 @@ const (
 	WeightAutomationUA    = 35 // puppeteer, selenium
 	WeightShortUA         = 10 // <50 chars, no browser indicator
 	WeightScreenAnomaly   = 15 // 0x0 or impossible values
-	WeightTimezoneMismatch = 10 // Client TZ != IP geo TZ
 	WeightNoPlugins       = 5  // No plugins detected
 	WeightNoLanguages     = 5  // No languages array
 	WeightSuspiciousPath   = 30 // Known attack/exploit path patterns
@@ -65,7 +64,7 @@ type ClientSignals struct {
 }
 
 // CalculateScore computes the bot score based on various signals
-func CalculateScore(userAgent string, clientSignals *ClientSignals, isDatacenterIP bool, headers map[string]string) *ScoringResult {
+func CalculateScore(userAgent string, clientSignals *ClientSignals, isDatacenterIP bool, isAICrawlerIP bool, aiCrawlerIPName string, headers map[string]string) *ScoringResult {
 	result := &ScoringResult{
 		Score:    0,
 		Category: CategoryHuman,
@@ -82,6 +81,19 @@ func CalculateScore(userAgent string, clientSignals *ClientSignals, isDatacenter
 			Name:   "known_ai_crawler",
 			Weight: 0,
 			Value:  GetAICrawlerName(userAgent),
+		})
+		result.IsBot = true
+		return result
+	}
+
+	// Check AI crawler IP ranges (catches crawlers with spoofed/generic UAs)
+	if isAICrawlerIP && aiCrawlerIPName != "" {
+		result.Score = 0
+		result.Category = CategoryAICrawler
+		result.Signals = append(result.Signals, Signal{
+			Name:   "ai_crawler_ip",
+			Weight: 0,
+			Value:  aiCrawlerIPName,
 		})
 		result.IsBot = true
 		return result

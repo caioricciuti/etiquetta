@@ -50,10 +50,12 @@ type EnrichmentResult struct {
 	IsBot       bool
 
 	// Bot scoring
-	BotScore     int
-	BotCategory  string
-	BotSignals   string
-	DatacenterIP bool
+	BotScore        int
+	BotCategory     string
+	BotSignals      string
+	DatacenterIP    bool
+	AICrawlerIP     bool
+	AICrawlerIPName string
 
 	// Referrer
 	ReferrerDomain string
@@ -89,9 +91,12 @@ func (e *Enricher) EnrichWithHeaders(ip, userAgent, referrerURL string, headers 
 	// Check datacenter IP
 	result.DatacenterIP = bot.IsDatacenterIP(ip)
 
+	// Check AI crawler IP ranges
+	result.AICrawlerIP, result.AICrawlerIPName = bot.IsAICrawlerIP(ip)
+
 	// Bot scoring (server-side, without client signals)
 	// Client signals will be added in handlers.go
-	botResult := bot.CalculateScore(userAgent, nil, result.DatacenterIP, headers)
+	botResult := bot.CalculateScore(userAgent, nil, result.DatacenterIP, result.AICrawlerIP, result.AICrawlerIPName, headers)
 	result.BotScore = botResult.Score
 	result.BotCategory = botResult.Category
 	result.BotSignals = bot.SignalsToJSON(botResult.Signals)

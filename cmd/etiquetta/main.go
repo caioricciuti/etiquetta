@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+
 	"github.com/caioricciuti/etiquetta/internal/api"
 )
 
@@ -46,9 +48,9 @@ func init() {
 	// Set version in API package for /api/version endpoint
 	api.Version = Version
 
-	// Global flags available to all commands
-	rootCmd.PersistentFlags().StringVarP(&dataDir, "data", "d", "./data", "Data directory for database and files")
-	rootCmd.PersistentFlags().StringVarP(&listenAddr, "listen", "l", ":3456", "Address to listen on")
+	// Global flags with env var fallbacks
+	rootCmd.PersistentFlags().StringVarP(&dataDir, "data", "d", getEnvOr("ETIQUETTA_DATA_DIR", "./data"), "Data directory for database and files")
+	rootCmd.PersistentFlags().StringVarP(&listenAddr, "listen", "l", getEnvPort("ETIQUETTA_PORT", ":3456"), "Address to listen on")
 
 	// Add subcommands
 	rootCmd.AddCommand(serveCmd)
@@ -57,6 +59,28 @@ func init() {
 	rootCmd.AddCommand(userCmd)
 	rootCmd.AddCommand(geoipCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(stopCmd)
+}
+
+// getEnvOr returns the env var value or a fallback
+func getEnvOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// getEnvPort returns the env var as a listen address, prefixing ":" if needed
+func getEnvPort(key, fallback string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	// If user passes just a port number like "3456", prefix with ":"
+	if v[0] != ':' && !strings.Contains(v, ":") {
+		return ":" + v
+	}
+	return v
 }
 
 func main() {
