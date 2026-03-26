@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -31,6 +30,50 @@ type debugTokenEntry struct {
 	expiresAt   time.Time
 }
 
+// pickResults stores element picker selections: token → suggestion JSON
+var pickResults sync.Map
+
+// SubmitPickResult receives a picker selection from the target site via sendBeacon.
+// POST /api/tagmanager/pick-result (no auth — token-validated, called cross-origin)
+func (h *Handlers) SubmitPickResult(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Bad request")
+		return
+	}
+	var payload struct {
+		Token      string          `json:"token"`
+		Suggestion json.RawMessage `json:"suggestion"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.Token == "" || len(payload.Suggestion) == 0 {
+		writeError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	// Validate token exists
+	if _, ok := debugTokens.Load(payload.Token); !ok {
+		writeError(w, http.StatusForbidden, "Invalid token")
+		return
+	}
+	pickResults.Store(payload.Token, payload.Suggestion)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetPickResult returns the picker selection for a token (polled by the dashboard).
+// GET /api/tagmanager/pick-result?token=TOKEN
+func (h *Handlers) GetPickResult(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	if result, ok := pickResults.LoadAndDelete(token); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(result.(json.RawMessage))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // proxyClient is used by PickProxy to fetch target pages
 var proxyClient = &http.Client{
 	Timeout: 10 * time.Second,
@@ -43,8 +86,55 @@ var proxyClient = &http.Client{
 }
 
 var reCSPMeta = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>`)
+var reAbsPath = regexp.MustCompile(`((?:src|href|action)\s*=\s*)(["'])(\/[^"']*)(["'])`)
 
-// PickProxy fetches a target URL server-side, injects the picker script, and serves it
+// rewriteAbsPaths rewrites absolute-path URLs (/foo) to go through the resource proxy.
+// Skips protocol-relative URLs (//cdn.example.com).
+func rewriteAbsPaths(html, proxyBase string) string {
+	return reAbsPath.ReplaceAllStringFunc(html, func(match string) string {
+		sub := reAbsPath.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		attr, quote, path, closeQuote := sub[1], sub[2], sub[3], sub[4]
+		if strings.HasPrefix(path, "//") {
+			return match
+		}
+		return attr + quote + proxyBase + strings.TrimPrefix(path, "/") + closeQuote
+	})
+}
+
+// preparePickerHTML rewrites absolute-path URLs, strips CSP, injects Worker override, and injects the picker script.
+func preparePickerHTML(html, proxyBase string) string {
+	html = rewriteAbsPaths(html, proxyBase)
+	html = reCSPMeta.ReplaceAllString(html, "")
+
+	// No JS-level overrides needed — the SPA catch-all in router.go handles all
+	// sub-resource proxying during picker sessions via the __etq_pick cookie.
+
+	pickerScript := "<script>" + generatePickerJS() + "</script>"
+	if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx != -1 {
+		html = html[:idx] + pickerScript + html[idx:]
+	} else {
+		html += pickerScript
+	}
+	return html
+}
+
+// validatePickToken checks if a pick token is valid and not expired.
+func validatePickToken(token string) bool {
+	if entry, ok := debugTokens.Load(token); ok {
+		de := entry.(debugTokenEntry)
+		if time.Now().Before(de.expiresAt) {
+			return true
+		}
+		debugTokens.Delete(token)
+	}
+	return false
+}
+
+// PickProxy fetches a target URL, rewrites absolute-path URLs through the resource proxy,
+// injects the picker script, and serves it for the iframe.
 func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 	rawURL := r.URL.Query().Get("url")
 	token := r.URL.Query().Get("token")
@@ -52,34 +142,17 @@ func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "url and token are required")
 		return
 	}
-
-	// Validate token
-	if entry, ok := debugTokens.Load(token); ok {
-		de := entry.(debugTokenEntry)
-		if time.Now().After(de.expiresAt) {
-			debugTokens.Delete(token)
-			writeError(w, http.StatusForbidden, "Token expired")
-			return
-		}
-	} else {
-		writeError(w, http.StatusForbidden, "Invalid token")
+	if !validatePickToken(token) {
+		writeError(w, http.StatusForbidden, "Invalid or expired token")
 		return
 	}
 
-	// Parse and validate URL
 	parsed, err := url.Parse(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		writeError(w, http.StatusBadRequest, "Invalid URL")
 		return
 	}
 
-	// SSRF protection
-	if isPrivateHost(parsed.Hostname()) {
-		writeError(w, http.StatusBadRequest, "Cannot proxy private/local addresses")
-		return
-	}
-
-	// Fetch the target page
 	req, err := http.NewRequestWithContext(r.Context(), "GET", rawURL, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid URL")
@@ -95,84 +168,51 @@ func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Validate content type is HTML
-	ct := resp.Header.Get("Content-Type")
-	if !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
-		writeError(w, http.StatusBadRequest, "URL did not return HTML content")
-		return
-	}
-
-	// Read body with size limit (10MB)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to read response")
 		return
 	}
 
-	html := string(body)
+	proxyBase := fmt.Sprintf("/_etq_res/%s/%s/%s/", token, parsed.Scheme, parsed.Host)
+	html := preparePickerHTML(string(body), proxyBase)
 
-	// Build proxy base path for sub-resource rewriting
-	proxyBase := fmt.Sprintf("/_etq_proxy/%s/%s/%s/", token, parsed.Scheme, parsed.Host)
-	originalOrigin := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+	// Set picker cookie so the SPA catch-all can proxy sub-resource requests
+	http.SetCookie(w, &http.Cookie{
+		Name:     "__etq_pick",
+		Value:    fmt.Sprintf("%s/%s/%s", token, parsed.Scheme, parsed.Host),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
-	// Inject <base> tag pointing to proxy path so relative URLs go through proxy
-	html = injectBaseTag(html, proxyBase)
-
-	// Rewrite absolute URLs pointing to the target origin
-	html = rewriteAbsoluteURLs(html, originalOrigin, proxyBase)
-
-	// Strip CSP meta tags that would block our injected script
-	html = stripCSPMeta(html)
-
-	// Inject picker script before </body>
-	html = injectPickerScript(html)
-
-	// Serve without CSP or X-Frame-Options so the iframe works
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Write([]byte(html))
 }
 
-// PickProxyResource proxies sub-resources (CSS, JS, images) for the element picker.
-// Route: GET /_etq_proxy/{token}/{scheme}/{host}/*
+// PickProxyResource proxies sub-resources (JS, CSS, images, WASM) for the element picker.
+// Non-HTML content is passed through without any modification.
 func (h *Handlers) PickProxyResource(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	scheme := chi.URLParam(r, "scheme")
 	host := chi.URLParam(r, "host")
 	rest := chi.URLParam(r, "*")
 
-	// Validate token
-	if entry, ok := debugTokens.Load(token); ok {
-		de := entry.(debugTokenEntry)
-		if time.Now().After(de.expiresAt) {
-			debugTokens.Delete(token)
-			writeError(w, http.StatusForbidden, "Token expired")
-			return
-		}
-	} else {
-		writeError(w, http.StatusForbidden, "Invalid token")
+	if !validatePickToken(token) {
+		writeError(w, http.StatusForbidden, "Invalid or expired token")
 		return
 	}
-
-	// Validate scheme
 	if scheme != "http" && scheme != "https" {
 		writeError(w, http.StatusBadRequest, "Invalid scheme")
 		return
 	}
 
-	// SSRF protection
-	if isPrivateHost(host) {
-		writeError(w, http.StatusBadRequest, "Cannot proxy private/local addresses")
-		return
-	}
-
-	// Reconstruct target URL
 	targetURL := fmt.Sprintf("%s://%s/%s", scheme, host, rest)
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	// Fetch the resource
 	req, err := http.NewRequestWithContext(r.Context(), "GET", targetURL, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid URL")
@@ -188,7 +228,6 @@ func (h *Handlers) PickProxyResource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Read body with size limit (10MB)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to read response")
@@ -197,135 +236,22 @@ func (h *Handlers) PickProxyResource(w http.ResponseWriter, r *http.Request) {
 
 	ct := resp.Header.Get("Content-Type")
 
-	// If HTML (navigated link), process like PickProxy
+	// If HTML (in-picker navigation), rewrite URLs and inject picker script
 	if strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml") {
-		html := string(body)
-		proxyBase := fmt.Sprintf("/_etq_proxy/%s/%s/%s/", token, scheme, host)
-		originalOrigin := fmt.Sprintf("%s://%s", scheme, host)
-
-		html = injectBaseTag(html, proxyBase)
-		html = rewriteAbsoluteURLs(html, originalOrigin, proxyBase)
-		html = stripCSPMeta(html)
-		html = injectPickerScript(html)
-
+		proxyBase := fmt.Sprintf("/_etq_res/%s/%s/%s/", token, scheme, host)
+		html := preparePickerHTML(string(body), proxyBase)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store")
 		w.Write([]byte(html))
 		return
 	}
 
-	// Non-HTML: pass through with original Content-Type
+	// Non-HTML: pass through untouched
 	if ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.Write(body)
-}
-
-// isPrivateHost returns true if the hostname resolves to a private/loopback address
-func isPrivateHost(host string) bool {
-	lower := strings.ToLower(host)
-	if lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower == "0.0.0.0" {
-		return true
-	}
-	// Check for private IP ranges
-	ip := net.ParseIP(host)
-	if ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
-	}
-	// Resolve hostname and check
-	addrs, err := net.LookupHost(host)
-	if err != nil {
-		return true // fail closed
-	}
-	for _, addr := range addrs {
-		ip := net.ParseIP(addr)
-		if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
-			return true
-		}
-	}
-	return false
-}
-
-// injectBaseTag inserts a <base href> after <head> pointing to the proxy path
-func injectBaseTag(html string, proxyBase string) string {
-	baseTag := fmt.Sprintf(`<base href="%s">`, proxyBase)
-	// Try to insert after <head> or <head ...>
-	re := regexp.MustCompile(`(?i)(<head[^>]*>)`)
-	if re.MatchString(html) {
-		return re.ReplaceAllString(html, "${1}"+baseTag)
-	}
-	// Fallback: prepend to HTML
-	return baseTag + html
-}
-
-// rewriteAbsoluteURLs rewrites src/href attributes pointing to the original origin to go through the proxy
-var reAbsoluteAttr = regexp.MustCompile(`((?:src|href)\s*=\s*)(["'])` + `(https?://[^"']+)` + `(["'])`)
-var reSrcsetURL = regexp.MustCompile(`((?:srcset)\s*=\s*["'])([^"']+)(["'])`)
-
-func rewriteAbsoluteURLs(html, originalOrigin, proxyBase string) string {
-	// Rewrite src="..." and href="..."
-	html = reAbsoluteAttr.ReplaceAllStringFunc(html, func(match string) string {
-		sub := reAbsoluteAttr.FindStringSubmatch(match)
-		if len(sub) < 5 {
-			return match
-		}
-		attr, quote, urlStr, closeQuote := sub[1], sub[2], sub[3], sub[4]
-		// Skip anchors, javascript:, data: URIs
-		lower := strings.ToLower(strings.TrimSpace(urlStr))
-		if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "#") {
-			return match
-		}
-		if strings.HasPrefix(urlStr, originalOrigin+"/") {
-			path := strings.TrimPrefix(urlStr, originalOrigin+"/")
-			return attr + quote + proxyBase + path + closeQuote
-		}
-		if strings.HasPrefix(urlStr, originalOrigin+"?") {
-			rest := strings.TrimPrefix(urlStr, originalOrigin)
-			return attr + quote + proxyBase + rest + closeQuote
-		}
-		if urlStr == originalOrigin {
-			return attr + quote + proxyBase + closeQuote
-		}
-		return match
-	})
-
-	// Rewrite srcset="..."
-	html = reSrcsetURL.ReplaceAllStringFunc(html, func(match string) string {
-		sub := reSrcsetURL.FindStringSubmatch(match)
-		if len(sub) < 4 {
-			return match
-		}
-		prefix, srcsetVal, suffix := sub[1], sub[2], sub[3]
-		parts := strings.Split(srcsetVal, ",")
-		for i, part := range parts {
-			fields := strings.Fields(strings.TrimSpace(part))
-			if len(fields) >= 1 && strings.HasPrefix(fields[0], originalOrigin+"/") {
-				fields[0] = proxyBase + strings.TrimPrefix(fields[0], originalOrigin+"/")
-				parts[i] = " " + strings.Join(fields, " ")
-			}
-		}
-		return prefix + strings.Join(parts, ",") + suffix
-	})
-
-	return html
-}
-
-// stripCSPMeta removes <meta http-equiv="Content-Security-Policy"> tags
-func stripCSPMeta(html string) string {
-	return reCSPMeta.ReplaceAllString(html, "")
-}
-
-// injectPickerScript inserts the picker JS before </body>
-func injectPickerScript(html string) string {
-	script := "<script>" + generatePickerJS() + "</script>"
-	lower := strings.ToLower(html)
-	idx := strings.LastIndex(lower, "</body>")
-	if idx != -1 {
-		return html[:idx] + script + html[idx:]
-	}
-	// No </body> — append
-	return html + script
 }
 
 // ServeContainerScript serves the published (or debug draft) container JS for a site
@@ -2101,40 +2027,39 @@ setInterval(function(){if(!_collapsed&&(_activeTab==="variables"||_activeTab==="
 `
 }
 
-// generatePickerJS returns a self-contained element picker script injected into the target page.
-// It highlights elements on hover, and on click generates multiple selector suggestions
-// sent back to the opener window via postMessage.
+// generatePickerJS returns a self-contained element picker script for the new-tab approach.
+// It highlights elements on hover, generates selector suggestions on click, and shows
+// a built-in suggestion panel. The chosen selector is sent to window.opener via postMessage.
 func generatePickerJS() string {
 	return `(function(){
 "use strict";
-var isIframe=(window.parent!==window);
-var target=isIframe?window.parent:window.opener;
-if(!target){console.warn("Etiquetta Picker: no parent or opener window");return;}
-var overlay=null,tooltip=null,selected=null,active=true;
+var parent=(window.parent!==window)?window.parent:null;
+var active=true,panel=null,lastHighlighted=null;
+
 var style=document.createElement("style");
-style.textContent=".__etq_pick_hl{outline:2px solid #6366f1!important;outline-offset:-1px;cursor:crosshair!important;}.__etq_pick_overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;cursor:crosshair;}.__etq_pick_tooltip{position:fixed;z-index:2147483647;background:#1e1b4b;color:#e0e7ff;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 10px;border-radius:6px;pointer-events:none;max-width:400px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.3);}.__etq_pick_banner{position:fixed;top:0;left:0;right:0;z-index:2147483647;background:linear-gradient(135deg,#1e1b4b,#312e81);color:#e0e7ff;font:13px/1 system-ui,sans-serif;padding:10px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.2);}.__etq_pick_banner button{background:#6366f1;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font:12px/1 system-ui;font-weight:600;}.__etq_pick_banner button:hover{background:#4f46e5;}.__etq_pick_banner .cancel{background:transparent;border:1px solid #6366f1;}";
+style.textContent=[
+".__etq_pick_hl{outline:2px solid #6366f1!important;outline-offset:-1px;cursor:crosshair!important;}",
+".__etq_pick_tooltip{position:fixed;z-index:2147483647;background:#1e1b4b;color:#e0e7ff;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 10px;border-radius:6px;pointer-events:none;max-width:400px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.3);}",
+".__etq_pick_panel{position:fixed;bottom:0;left:0;right:0;z-index:2147483647;background:#1e1b4b;color:#e0e7ff;font:13px/1.4 system-ui,sans-serif;box-shadow:0 -4px 16px rgba(0,0,0,.3);max-height:45vh;overflow-y:auto;}",
+".__etq_pick_panel_header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.1);}",
+".__etq_pick_panel_header span{font-weight:600;}",
+".__etq_pick_panel_list{padding:8px;}",
+".__etq_pick_panel_item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:pointer;transition:background .15s;width:100%;border:none;background:none;color:inherit;font:inherit;text-align:left;}",
+".__etq_pick_panel_item:hover{background:rgba(99,102,241,.25);}",
+".__etq_pick_panel_item .badge{background:rgba(99,102,241,.3);color:#a5b4fc;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;}",
+".__etq_pick_panel_item .best{background:#6366f1;color:#fff;}",
+".__etq_pick_panel_item .selector{font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c7d2fe;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}"
+].join("");
 document.head.appendChild(style);
 
-// Banner
-var banner=document.createElement("div");
-banner.className="__etq_pick_banner";
-banner.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M22 2L15 22l-3-9-9-3z"/></svg><span style="flex:1;font-weight:600;">Etiquetta Element Picker</span><span style="opacity:0.7;font-size:12px;">Click to select, double-click link to navigate</span>';
-var cancelBtn=document.createElement("button");
-cancelBtn.className="cancel";cancelBtn.textContent="Cancel";
-cancelBtn.onclick=function(){cleanup();if(!isIframe)window.close();else try{target.postMessage({type:"etiquetta_picker_cancel"},"*");}catch(e){}};
-banner.appendChild(cancelBtn);
-document.body.appendChild(banner);
 
 // Tooltip
-tooltip=document.createElement("div");
+var tooltip=document.createElement("div");
 tooltip.className="__etq_pick_tooltip";
 tooltip.style.display="none";
 document.body.appendChild(tooltip);
 
-var lastHighlighted=null;
-
-// Signal ready
-try{target.postMessage({type:"etiquetta_picker_ready"},"*");}catch(e){}
+var typeLabels={id:"Element ID",css:"CSS Selector",data_attr:"Data Attribute",text:"Text Content",link_url:"Link URL"};
 
 function getElementInfo(el){
 var tag=el.tagName.toLowerCase();
@@ -2155,36 +2080,29 @@ return {tag:tag,id:id,classes:classes,text:text,dataAttrs:dataAttrs,href:href};
 function generateSelectors(el){
 var info=getElementInfo(el);
 var suggestions=[];
-// 1. ID (highest specificity)
 if(info.id){
 suggestions.push({type:"id",label:"#"+info.id,selector:"#"+info.id,specificity:100,data_attr_name:"",data_attr_value:""});
 }
-// 2. Data attributes
 for(var key in info.dataAttrs){
 var val=info.dataAttrs[key];
 var sel=val?"[data-"+key+'="'+val+'"]':"[data-"+key+"]";
 suggestions.push({type:"data_attr",label:sel,selector:sel,specificity:80,data_attr_name:key,data_attr_value:val});
 }
-// 3. Link URL
 if(info.href&&info.href!=="/"&&info.href!=="#"){
 suggestions.push({type:"link_url",label:'a[href*="'+info.href+'"]',selector:'a[href*="'+info.href+'"]',specificity:70});
 }
-// 4. Text content (if short enough to be meaningful)
 if(info.text&&info.text.length>0&&info.text.length<=60){
 suggestions.push({type:"text",label:'"'+info.text+'"',selector:info.text,specificity:60});
 }
-// 5. CSS by classes
 if(info.classes.length>0){
 var classSel=info.tag+"."+info.classes.join(".");
 suggestions.push({type:"css",label:classSel,selector:classSel,specificity:50});
 }
-// 6. CSS by tag + nth-child (structural)
 var parent=el.parentElement;
 if(parent){
 var siblings=Array.from(parent.children);
 var idx=siblings.indexOf(el)+1;
 var structSel=info.tag+":nth-child("+idx+")";
-// Build full path up 2 levels for uniqueness
 var path=[structSel];
 var cur=parent;
 for(var i=0;i<2&&cur&&cur!==document.body;i++){
@@ -2197,19 +2115,19 @@ cur=cur.parentElement;
 }
 suggestions.push({type:"css",label:path.join(" > "),selector:path.join(" > "),specificity:30});
 }
-// If no suggestions at all, use tag
 if(suggestions.length===0){
 suggestions.push({type:"css",label:info.tag,selector:info.tag,specificity:10});
 }
+suggestions.sort(function(a,b){return b.specificity-a.specificity;});
 return {suggestions:suggestions,tag:info.tag,text:info.text};
 }
 
 function showTooltip(el,x,y){
 var info=getElementInfo(el);
-var parts=["<"+info.tag+">"];
+var parts=["&lt;"+info.tag+"&gt;"];
 if(info.id)parts.push('<span style="color:#a5b4fc;">#'+info.id+"</span>");
 if(info.classes.length)parts.push('<span style="color:#86efac;">.'+info.classes.slice(0,3).join(".")+"</span>");
-if(info.text)parts.push('<span style="opacity:0.6;margin-left:4px;">'+info.text.slice(0,40)+"</span>");
+if(info.text)parts.push('<span style="opacity:.6;margin-left:4px;">'+info.text.slice(0,40)+"</span>");
 tooltip.innerHTML=parts.join(" ");
 tooltip.style.display="block";
 var tw=tooltip.offsetWidth,th=tooltip.offsetHeight;
@@ -2219,75 +2137,93 @@ tooltip.style.left=tx+"px";
 tooltip.style.top=ty+"px";
 }
 
+function showPanel(result){
+if(panel)panel.parentNode.removeChild(panel);
+panel=document.createElement("div");
+panel.className="__etq_pick_panel";
+var header=document.createElement("div");
+header.className="__etq_pick_panel_header";
+header.innerHTML='<span>Selected: &lt;'+result.tag+'&gt;</span>'+(result.text?'<span style="opacity:.6;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;">"'+result.text.slice(0,50)+'"</span>':'');
+var pickAnotherBtn=document.createElement("button");
+pickAnotherBtn.style.cssText="margin-left:auto;background:#6366f1;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font:12px/1 system-ui;font-weight:600;";
+pickAnotherBtn.textContent="Pick Another";
+pickAnotherBtn.onclick=function(){
+hidePanel();
+active=true;
+};
+header.appendChild(pickAnotherBtn);
+panel.appendChild(header);
+var list=document.createElement("div");
+list.className="__etq_pick_panel_list";
+result.suggestions.forEach(function(s,i){
+var btn=document.createElement("button");
+btn.className="__etq_pick_panel_item";
+btn.innerHTML='<span class="badge'+(i===0?" best":"")+'">'+((typeLabels[s.type])||s.type)+'</span><span class="selector">'+s.selector+'</span>';
+btn.onclick=function(){
+// Send to parent iframe via postMessage
+document.cookie="__etq_pick=;Path=/;Max-Age=0";if(parent){try{parent.postMessage({type:"etiquetta_picker_select",suggestion:s},"*");}catch(err){}}
+cleanup();
+};
+list.appendChild(btn);
+});
+panel.appendChild(list);
+document.body.appendChild(panel);
+}
+
+function hidePanel(){
+if(panel&&panel.parentNode){panel.parentNode.removeChild(panel);panel=null;}
+}
+
 function onMouseMove(e){
 if(!active)return;
 var el=document.elementFromPoint(e.clientX,e.clientY);
-if(!el||el===banner||banner.contains(el)||el===tooltip)return;
+if(!el||el===tooltip||(panel&&panel.contains(el)))return;
 if(lastHighlighted&&lastHighlighted!==el){
 lastHighlighted.classList.remove("__etq_pick_hl");
 }
 el.classList.add("__etq_pick_hl");
 lastHighlighted=el;
 showTooltip(el,e.clientX,e.clientY);
-// Send hover info to parent
-var info=getElementInfo(el);
-try{target.postMessage({type:"etiquetta_picker_hover",tag:info.tag,id:info.id,classes:info.classes.join(" "),text:info.text},"*");}catch(err){}
 }
 
 function onClick(e){
 if(!active)return;
-if(banner.contains(e.target))return;
+if(panel&&panel.contains(e.target))return;
 e.preventDefault();
 e.stopPropagation();
 e.stopImmediatePropagation();
 var el=lastHighlighted||document.elementFromPoint(e.clientX,e.clientY);
-if(!el||el===banner||el===tooltip)return;
+if(!el||el===tooltip)return;
 var result=generateSelectors(el);
-try{
-target.postMessage({type:"etiquetta_picker_result",tag:result.tag,text:result.text,suggestions:result.suggestions},"*");
-}catch(err){console.error("Etiquetta Picker: postMessage failed",err);}
-// Flash green to confirm selection
 el.style.outline="3px solid #22c55e";
-setTimeout(function(){
-el.style.outline="";
-el.classList.remove("__etq_pick_hl");
-},800);
-}
-
-function onDblClick(e){
-if(!active)return;
-if(banner.contains(e.target))return;
-e.preventDefault();
-e.stopPropagation();
-e.stopImmediatePropagation();
-var el=e.target;
-while(el&&el!==document.body){
-if(el.tagName==="A"&&el.href){
-try{target.postMessage({type:"etiquetta_picker_navigate",url:el.href},"*");}catch(err){}
-return;
-}
-el=el.parentElement;
-}
+setTimeout(function(){el.style.outline="";el.classList.remove("__etq_pick_hl");},800);
+active=false;
+if(lastHighlighted){lastHighlighted.classList.remove("__etq_pick_hl");lastHighlighted=null;}
+tooltip.style.display="none";
+showPanel(result);
 }
 
 function cleanup(){
 active=false;
+document.cookie="__etq_pick=;Path=/;Max-Age=0";
 document.removeEventListener("mousemove",onMouseMove,true);
 document.removeEventListener("click",onClick,true);
-document.removeEventListener("dblclick",onDblClick,true);
 if(lastHighlighted)lastHighlighted.classList.remove("__etq_pick_hl");
-if(banner.parentNode)banner.parentNode.removeChild(banner);
 if(tooltip.parentNode)tooltip.parentNode.removeChild(tooltip);
+if(panel&&panel.parentNode)panel.parentNode.removeChild(panel);
 if(style.parentNode)style.parentNode.removeChild(style);
 }
 
 document.addEventListener("mousemove",onMouseMove,true);
 document.addEventListener("click",onClick,true);
-document.addEventListener("dblclick",onDblClick,true);
 
-// Listen for cleanup signal from parent
+// Listen for close signal from opener
 window.addEventListener("message",function(e){
 if(e.data==="etiquetta_picker_close")cleanup();
+if(e.data==="etiquetta_picker_resume"){active=true;hidePanel();}
 });
+
+// Signal ready
+if(parent){try{parent.postMessage({type:"etiquetta_picker_ready"},"*");}catch(e){}}
 })();`
 }

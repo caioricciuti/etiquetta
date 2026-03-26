@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useContainer, useExportContainer, useImportContainer, useDeleteContainer, useRenameContainer } from '@/hooks/useTagManager'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -11,6 +11,7 @@ import { TriggerList } from './components/TriggerList'
 import { VariableList } from './components/VariableList'
 import { PrivacyAudit } from './components/PrivacyAudit'
 import { PublishBar } from './components/PublishBar'
+import { useSelectedDomain } from '@/hooks/useSelectedDomain'
 import { ArrowLeft, Loader2, Code, Zap, Variable, ShieldCheck, Download, Upload, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 
 export function TagManagerContainer() {
@@ -22,9 +23,17 @@ export function TagManagerContainer() {
   const deleteContainer = useDeleteContainer()
   const renameContainer = useRenameContainer()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const { selectedDomainId } = useSelectedDomain()
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [newName, setNewName] = useState('')
+
+  // Navigate back to list when the selected domain changes and doesn't match this container
+  useEffect(() => {
+    if (container && selectedDomainId && container.domain_id !== selectedDomainId) {
+      navigate('/tag-manager')
+    }
+  }, [selectedDomainId, container, navigate])
 
   if (!containerId) {
     navigate('/tag-manager')

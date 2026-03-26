@@ -2,9 +2,12 @@ package api
 
 import (
 	"embed"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -255,6 +258,8 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureErrorTracking))
 				r.Get("/stats/errors", h.GetStatsErrors)
+				r.Get("/stats/errors/detail", h.GetStatsErrorDetail)
+				r.Get("/stats/errors/timeseries", h.GetStatsErrorTimeseries)
 			})
 
 			// Pro features - Export
@@ -300,6 +305,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Get("/tagmanager/containers/{id}/export", h.ExportContainer)
 				r.Post("/tagmanager/containers/{id}/import", h.ImportContainer)
 				r.Post("/tagmanager/containers/{id}/preview-token", h.PreviewToken)
+				r.Get("/tagmanager/pick-result", h.GetPickResult)
 
 				// Tag CRUD
 				r.Get("/tagmanager/containers/{cid}/tags", h.ListTags)
@@ -421,9 +427,10 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		})
 	})
 
-	// Element Picker proxy (token-validated, no auth middleware needed)
+	// Element Picker (token-validated, no auth needed)
 	r.Get("/api/tagmanager/pick-proxy", h.PickProxy)
-	r.With(RateLimit(200, time.Minute)).Get("/_etq_proxy/{token}/{scheme}/{host}/*", h.PickProxyResource)
+	r.Get("/_etq_res/{token}/{scheme}/{host}/*", h.PickProxyResource)
+	r.Post("/api/tagmanager/pick-result", h.SubmitPickResult)
 
 	// Serve static UI files from embedded filesystem
 	fileServer := http.FileServer(http.FS(uiFS))
@@ -438,6 +445,38 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				f.Close()
 				fileServer.ServeHTTP(w, req)
 				return
+			}
+		}
+
+		// Picker proxy: if picker session active and path has a file extension,
+		// proxy to the target site instead of returning SPA index.html.
+		// This catches dynamic import(), Workers, WASM, and any other resource loading.
+		if cookie, err := req.Cookie("__etq_pick"); err == nil {
+			if ext := filepath.Ext(path); ext != "" {
+				parts := strings.SplitN(cookie.Value, "/", 3) // token/scheme/host
+				if len(parts) == 3 && validatePickToken(parts[0]) {
+					targetURL := fmt.Sprintf("%s://%s%s", parts[1], parts[2], path)
+					if req.URL.RawQuery != "" {
+						targetURL += "?" + req.URL.RawQuery
+					}
+					proxyReq, pErr := http.NewRequestWithContext(req.Context(), "GET", targetURL, nil)
+					if pErr == nil {
+						proxyReq.Header.Set("User-Agent", req.Header.Get("User-Agent"))
+						proxyReq.Header.Set("Accept", "*/*")
+						resp, rErr := proxyClient.Do(proxyReq)
+						if rErr == nil {
+							defer resp.Body.Close()
+							if resp.StatusCode == http.StatusOK {
+								if ct := resp.Header.Get("Content-Type"); ct != "" {
+									w.Header().Set("Content-Type", ct)
+								}
+								w.Header().Set("Cache-Control", "private, max-age=300")
+								io.Copy(w, resp.Body)
+								return
+							}
+						}
+					}
+				}
 			}
 		}
 

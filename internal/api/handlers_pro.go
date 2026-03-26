@@ -67,7 +67,7 @@ func (h *Handlers) GetStatsErrors(w http.ResponseWriter, r *http.Request) {
 		WHERE `+where+`
 		GROUP BY error_hash, error_type, error_message
 		ORDER BY occurrences DESC
-		LIMIT 10
+		LIMIT 50
 	`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -86,6 +86,151 @@ func (h *Handlers) GetStatsErrors(w http.ResponseWriter, r *http.Request) {
 			"error_message":     message,
 			"occurrences":       occurrences,
 			"affected_sessions": affected,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetStatsErrorDetail returns individual error occurrences for a specific error hash (Pro feature)
+func (h *Handlers) GetStatsErrorDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	f := parseStatsFilter(r)
+	errorHash := r.URL.Query().Get("error_hash")
+
+	if errorHash == "" {
+		writeError(w, http.StatusBadRequest, "error_hash parameter is required")
+		return
+	}
+
+	where := "timestamp >= ? AND timestamp <= ? AND error_hash = ?"
+	args := []interface{}{f.startMs, f.endMs, errorHash}
+	if f.domain != "" {
+		where += " AND domain = ?"
+		args = append(args, f.domain)
+	}
+
+	rows, err := h.db.Conn().QueryContext(ctx, `
+		SELECT id, timestamp, session_id, domain, url, path,
+			   error_type, error_message, error_stack, error_hash,
+			   script_url, line_number, column_number, browser_name, geo_country
+		FROM errors
+		WHERE `+where+`
+		ORDER BY timestamp DESC
+		LIMIT 100
+	`, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, sessionID, domain, url, path, errType, message, hash string
+		var ts int64
+		var stack, scriptURL, browserName, geoCountry sql.NullString
+		var lineNum, colNum sql.NullInt64
+		if err := rows.Scan(&id, &ts, &sessionID, &domain, &url, &path,
+			&errType, &message, &stack, &hash,
+			&scriptURL, &lineNum, &colNum, &browserName, &geoCountry); err != nil {
+			continue
+		}
+
+		entry := map[string]interface{}{
+			"id":            id,
+			"timestamp":     ts,
+			"session_id":    sessionID,
+			"domain":        domain,
+			"url":           url,
+			"path":          path,
+			"error_type":    errType,
+			"error_message": message,
+			"error_hash":    hash,
+		}
+		if stack.Valid {
+			entry["error_stack"] = stack.String
+		}
+		if scriptURL.Valid {
+			entry["script_url"] = scriptURL.String
+		}
+		if lineNum.Valid {
+			entry["line_number"] = lineNum.Int64
+		}
+		if colNum.Valid {
+			entry["column_number"] = colNum.Int64
+		}
+		if browserName.Valid {
+			entry["browser_name"] = browserName.String
+		}
+		if geoCountry.Valid {
+			entry["geo_country"] = geoCountry.String
+		}
+		result = append(result, entry)
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetStatsErrorTimeseries returns error occurrences over time for a specific error hash (Pro feature)
+func (h *Handlers) GetStatsErrorTimeseries(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	f := parseStatsFilter(r)
+	errorHash := r.URL.Query().Get("error_hash")
+
+	where := "timestamp >= ? AND timestamp <= ?"
+	args := []interface{}{f.startMs, f.endMs}
+	if errorHash != "" {
+		where += " AND error_hash = ?"
+		args = append(args, errorHash)
+	}
+	if f.domain != "" {
+		where += " AND domain = ?"
+		args = append(args, f.domain)
+	}
+
+	// Determine bucket size based on range
+	rangeMs := f.endMs - f.startMs
+	var bucketMs int64
+	var dateFmt string
+	switch {
+	case rangeMs <= 86400000*2: // ≤ 2 days → hourly
+		bucketMs = 3600000
+		dateFmt = "Hour"
+	case rangeMs <= 86400000*90: // ≤ 90 days → daily
+		bucketMs = 86400000
+		dateFmt = "Day"
+	default: // > 90 days → weekly
+		bucketMs = 86400000 * 7
+		dateFmt = "Week"
+	}
+	_ = dateFmt
+
+	rows, err := h.db.Conn().QueryContext(ctx, fmt.Sprintf(`
+		SELECT (timestamp / %d) * %d as bucket, COUNT(*) as count
+		FROM errors
+		WHERE %s
+		GROUP BY bucket
+		ORDER BY bucket
+	`, bucketMs, bucketMs, where), args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	result := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var bucket, count int64
+		rows.Scan(&bucket, &count)
+		t := time.UnixMilli(bucket)
+		label := t.Format("Jan 2")
+		if bucketMs == 3600000 {
+			label = t.Format("Jan 2 15:04")
+		}
+		result = append(result, map[string]interface{}{
+			"period": label,
+			"count":  count,
 		})
 	}
 

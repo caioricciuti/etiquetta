@@ -74,6 +74,29 @@ export interface ErrorSummary {
   affected_sessions: number
 }
 
+export interface ErrorDetail {
+  id: string
+  timestamp: number
+  session_id: string
+  domain: string
+  url: string
+  path: string
+  error_type: string
+  error_message: string
+  error_stack?: string
+  error_hash: string
+  script_url?: string
+  line_number?: number
+  column_number?: number
+  browser_name?: string
+  geo_country?: string
+}
+
+export interface ErrorTimeseries {
+  period: string
+  count: number
+}
+
 export interface Campaign {
   utm_source: string
   utm_medium: string

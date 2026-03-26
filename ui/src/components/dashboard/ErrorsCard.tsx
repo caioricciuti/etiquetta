@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { AlertTriangle, ArrowRight } from 'lucide-react'
 import { useErrors } from '../../hooks/useAnalyticsQueries'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
 import { FeatureGate, FeatureBadge } from '../FeatureGate'
@@ -12,10 +13,17 @@ export function ErrorsCard() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-lg font-semibold">Errors</CardTitle>
-          <FeatureBadge feature="error_tracking" />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-lg font-semibold">Errors</CardTitle>
+            <FeatureBadge feature="error_tracking" />
+          </div>
+          {errors.length > 0 && (
+            <Link to="/errors" className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
+              View all <ArrowRight className="h-3 w-3" />
+            </Link>
+          )}
         </div>
         <CardDescription>JavaScript errors from your users</CardDescription>
       </CardHeader>

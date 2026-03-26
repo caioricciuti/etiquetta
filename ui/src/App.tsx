@@ -29,6 +29,7 @@ import { Events } from './pages/Events'
 import { Compare } from './pages/Compare'
 import { Connections } from './pages/Connections'
 import { AdFraud } from './pages/AdFraud'
+import { Errors } from './pages/Errors'
 import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
@@ -60,6 +61,7 @@ import {
   Import,
   Video,
   Zap,
+  AlertTriangle,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -254,6 +256,7 @@ function AppSidebar() {
     { path: '/', name: 'Dashboard', icon: BarChart3 },
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
     { path: '/events', name: 'Events', icon: Zap },
+    { path: '/errors', name: 'Errors', icon: AlertTriangle, pro: 'error_tracking' },
     { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
     { path: '/consent', name: 'Consent', icon: Shield, pro: 'consent' },
@@ -434,6 +437,7 @@ function AppLayout() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/compare" element={<Compare />} />
               <Route path="/events" element={<Events />} />
+              <Route path="/errors" element={<Errors />} />
               <Route path="/bots" element={<BotAnalysis />} />
               <Route path="/replays" element={<ReplayList />} />
               <Route path="/replays/settings" element={<ReplaySettings />} />

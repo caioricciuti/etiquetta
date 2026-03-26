@@ -31,6 +31,8 @@ import type {
   EventsSummaryResponse,
   EventTimeseriesPoint,
   EventPropsResponse,
+  ErrorDetail,
+  ErrorTimeseries,
 } from '../lib/types'
 
 function useAnalyticsParams() {
@@ -156,6 +158,31 @@ export function useErrors(featureEnabled = true) {
   return useQuery({
     queryKey: ['stats', 'errors', qs],
     queryFn: () => fetchAPI<ErrorSummary[]>(`/api/stats/errors?${qs}`),
+    enabled: enabled && featureEnabled,
+    retry: false,
+    meta: { silent: true },
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useErrorDetail(errorHash: string, featureEnabled = true) {
+  const { qs, enabled } = useAnalyticsParams()
+  return useQuery({
+    queryKey: ['stats', 'errors', 'detail', errorHash, qs],
+    queryFn: () => fetchAPI<ErrorDetail[]>(`/api/stats/errors/detail?${qs}&error_hash=${encodeURIComponent(errorHash)}`),
+    enabled: enabled && featureEnabled && !!errorHash,
+    retry: false,
+    meta: { silent: true },
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useErrorTimeseries(errorHash?: string, featureEnabled = true) {
+  const { qs, enabled } = useAnalyticsParams()
+  const hashParam = errorHash ? `&error_hash=${encodeURIComponent(errorHash)}` : ''
+  return useQuery({
+    queryKey: ['stats', 'errors', 'timeseries', errorHash ?? 'all', qs],
+    queryFn: () => fetchAPI<ErrorTimeseries[]>(`/api/stats/errors/timeseries?${qs}${hashParam}`),
     enabled: enabled && featureEnabled,
     retry: false,
     meta: { silent: true },
