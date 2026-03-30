@@ -132,6 +132,7 @@ type BufferManager struct {
 
 	flushCh    chan FlushJob
 	db         *sql.DB
+	dbMu       sync.RWMutex // Guards DuckDB access; compaction takes write lock, writer takes read lock
 	config     BufferConfig
 	errorCount int64
 
@@ -238,12 +239,33 @@ func (bm *BufferManager) Close(_ context.Context) {
 	})
 }
 
+// DBMu returns the database access mutex. Background jobs that write to compacted
+// tables (events, performance, errors, visitor_sessions) should hold RLock during writes.
+func (bm *BufferManager) DBMu() *sync.RWMutex {
+	return &bm.dbMu
+}
+
+// PauseWrites acquires an exclusive lock, blocking the writer loop.
+// Must be paired with ResumeWrites. Used by compaction to get exclusive DB access.
+func (bm *BufferManager) PauseWrites() {
+	bm.dbMu.Lock()
+}
+
+// ResumeWrites releases the exclusive lock, unblocking the writer loop.
+func (bm *BufferManager) ResumeWrites() {
+	bm.dbMu.Unlock()
+}
+
 // writerLoop reads FlushJobs and loads parquet files into DuckDB.
 func (bm *BufferManager) writerLoop() {
 	defer bm.wg.Done()
 
 	for job := range bm.flushCh {
-		if err := bm.loadParquet(job); err != nil {
+		bm.dbMu.RLock()
+		err := bm.loadParquet(job)
+		bm.dbMu.RUnlock()
+
+		if err != nil {
 			atomic.AddInt64(&bm.errorCount, 1)
 			log.Printf("[buffer] Failed to load parquet into %s: %v", job.Table, err)
 			// Keep the file for retry/debugging

@@ -6,20 +6,23 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
 // BatchAnalyzer performs scheduled analysis of session behavior
 type BatchAnalyzer struct {
 	db       *sql.DB
+	dbMu     *sync.RWMutex
 	interval time.Duration
 	stopCh   chan struct{}
 }
 
 // NewBatchAnalyzer creates a new batch analyzer
-func NewBatchAnalyzer(db *sql.DB, interval time.Duration) *BatchAnalyzer {
+func NewBatchAnalyzer(db *sql.DB, interval time.Duration, dbMu *sync.RWMutex) *BatchAnalyzer {
 	return &BatchAnalyzer{
 		db:       db,
+		dbMu:     dbMu,
 		interval: interval,
 		stopCh:   make(chan struct{}),
 	}
@@ -53,6 +56,9 @@ func (b *BatchAnalyzer) Stop() {
 
 // analyze runs all behavioral analysis patterns
 func (b *BatchAnalyzer) analyze() {
+	b.dbMu.RLock()
+	defer b.dbMu.RUnlock()
+
 	since := time.Now().Add(-15 * time.Minute)
 	log.Printf("Running bot batch analysis for sessions since %v", since.Format(time.RFC3339))
 

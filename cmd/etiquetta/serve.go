@@ -261,7 +261,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	migrateManager := migrate.NewJobManager(migrateStore, bufferMgr, dataDir)
 
 	// Initialize compaction (runs daily)
-	compactor := buffer.NewCompactor(db.Conn())
+	compactor := buffer.NewCompactor(db.Conn(), bufferMgr)
 	compactCtx, compactCancel := context.WithCancel(context.Background())
 	compactor.StartSchedule(compactCtx, bufferCfg.CompactHour)
 
@@ -282,18 +282,26 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Create router
 	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager, migrateManager, replayStore)
 
+	// Shared mutex: compaction takes exclusive lock, all other writers to
+	// compacted tables (events, performance, errors, visitor_sessions) take read lock.
+	dbMu := bufferMgr.DBMu()
+
 	// Start data retention cleanup goroutine
 	go func() {
+		dbMu.RLock()
 		runDataRetention(db, licenseManager, settingsSvc, replayStore)
+		dbMu.RUnlock()
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
+			dbMu.RLock()
 			runDataRetention(db, licenseManager, settingsSvc, replayStore)
+			dbMu.RUnlock()
 		}
 	}()
 
 	// Start bot batch analysis (every 15 minutes)
-	batchAnalyzer := bot.NewBatchAnalyzer(db.Conn(), 15*time.Minute)
+	batchAnalyzer := bot.NewBatchAnalyzer(db.Conn(), 15*time.Minute, dbMu)
 	go batchAnalyzer.Start()
 
 	// Start server

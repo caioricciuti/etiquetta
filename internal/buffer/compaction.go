@@ -45,20 +45,32 @@ var tableIndexes = map[string][]string{
 
 // Compactor handles periodic table compaction for DuckDB.
 type Compactor struct {
-	db     *sql.DB
-	tables []string
+	db        *sql.DB
+	bufferMgr *BufferManager
+	tables    []string
 }
 
 // NewCompactor creates a new compactor for the given tables.
-func NewCompactor(db *sql.DB) *Compactor {
+func NewCompactor(db *sql.DB, bufferMgr *BufferManager) *Compactor {
 	return &Compactor{
-		db:     db,
-		tables: []string{"events", "performance", "errors", "visitor_sessions"},
+		db:        db,
+		bufferMgr: bufferMgr,
+		tables:    []string{"events", "performance", "errors", "visitor_sessions"},
 	}
 }
 
 // RunCompaction compacts all high-write tables by recreating them without fragmentation.
+// It flushes all buffers and pauses the writer loop to get exclusive DuckDB access,
+// preventing concurrent INSERT + DDL races that cause heap corruption via CGO.
 func (c *Compactor) RunCompaction(ctx context.Context) error {
+	// Flush all buffered data so nothing is lost during compaction
+	log.Println("[compaction] Flushing buffers before compaction...")
+	c.bufferMgr.Flush(ctx)
+
+	// Block the writer loop from executing INSERTs during DDL
+	c.bufferMgr.PauseWrites()
+	defer c.bufferMgr.ResumeWrites()
+
 	for _, table := range c.tables {
 		start := time.Now()
 		if err := c.compactTable(ctx, table); err != nil {
