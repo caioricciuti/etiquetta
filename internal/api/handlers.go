@@ -3,7 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
-	"compress/flate"
+	"compress/zlib"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -166,7 +166,11 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(contentType, "application/octet-stream"):
 		// Deflate-compressed payload from CompressionStream
-		reader := flate.NewReader(bytes.NewReader(body))
+		reader, zlibErr := zlib.NewReader(bytes.NewReader(body))
+		if zlibErr != nil {
+			writeError(w, http.StatusBadRequest, "Failed to decompress body")
+			return
+		}
 		decoded, decErr := io.ReadAll(io.LimitReader(reader, 1<<20))
 		reader.Close()
 		if decErr != nil {
