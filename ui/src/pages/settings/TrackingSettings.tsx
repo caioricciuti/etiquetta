@@ -58,6 +58,14 @@ export function TrackingSettings() {
     setEdited(prev => ({ ...prev, [key]: value }))
   }
 
+  function getString(key: string, fallback: string): string {
+    return edited[key] ?? settings?.[key] ?? fallback
+  }
+
+  function setString(key: string, value: string) {
+    setEdited(prev => ({ ...prev, [key]: value }))
+  }
+
   function getScope(key: string): string | undefined {
     return settings?.['scope:' + key]
   }
@@ -160,6 +168,34 @@ export function TrackingSettings() {
               checked={getBool('respect_dnt', true)}
               onCheckedChange={v => setBool('respect_dnt', v)}
             />
+          </div>
+
+          {/* Tracking Mode */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>
+                Visitor Identification
+                <ScopeIndicator scope={getScope('tracking_mode')} />
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                How visitors are identified across page views.
+                Cookieless uses no storage and is fully GDPR-compliant without consent.
+                Cookie and Local Storage enable cross-session identification but may require consent.
+              </p>
+            </div>
+            <Select
+              value={getString('tracking_mode', 'cookieless')}
+              onValueChange={(value) => setString('tracking_mode', value)}
+            >
+              <SelectTrigger className="w-[160px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cookieless">Cookieless</SelectItem>
+                <SelectItem value="cookie">First-party Cookie</SelectItem>
+                <SelectItem value="localStorage">Local Storage</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Session Timeout */}

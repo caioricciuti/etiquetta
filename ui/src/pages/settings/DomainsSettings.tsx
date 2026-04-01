@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useDomains, useCreateDomain, useDeleteDomain } from '@/hooks/useDomains'
+import { useShareLinks, useCreateShareLink, useDeleteShareLink } from '@/hooks/useShareLinks'
+import { useDomainStore } from '@/stores/useDomainStore'
 import { fetchAPI } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Globe, Copy, Trash2, Plus, Check } from 'lucide-react'
+import { Globe, Copy, Trash2, Plus, Check, Link2, ExternalLink } from 'lucide-react'
 import { SettingsLayout } from './SettingsLayout'
 
 export function DomainsSettings() {
@@ -122,13 +124,103 @@ export function DomainsSettings() {
         <CardContent>
           <pre className="p-4 bg-zinc-100 dark:bg-zinc-800 rounded-lg text-sm overflow-x-auto">
             <code>{`<!-- Etiquetta Analytics -->
-<script defer data-site="YOUR_SITE_ID" src="${window.location.origin}/s.js"></script>`}</code>
+<script defer data-site="YOUR_SITE_ID" src="${window.location.origin}/s.js?id=YOUR_SITE_ID"></script>`}</code>
           </pre>
           <p className="text-xs text-muted-foreground mt-3">
             Click "Copy Snippet" on a domain above to get the snippet with the correct site ID.
           </p>
         </CardContent>
       </Card>
+
+      <ShareLinksCard />
     </SettingsLayout>
+  )
+}
+
+function ShareLinksCard() {
+  const selectedDomainId = useDomainStore(s => s.selectedDomainId)
+  const { data: links } = useShareLinks()
+  const createLink = useCreateShareLink()
+  const deleteLink = useDeleteShareLink()
+  const [copiedToken, setCopiedToken] = useState<string | null>(null)
+
+  function handleCreate() {
+    if (!selectedDomainId) {
+      toast.error('Select a property first')
+      return
+    }
+    createLink.mutate({ domain_id: selectedDomainId }, {
+      onSuccess: () => toast.success('Share link created'),
+      onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to create'),
+    })
+  }
+
+  function copyLink(token: string) {
+    const url = `${window.location.origin}/shared/${token}`
+    navigator.clipboard.writeText(url)
+    setCopiedToken(token)
+    toast.success('Link copied')
+    setTimeout(() => setCopiedToken(null), 2000)
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Link2 className="h-5 w-5" />
+              Public Dashboard Links
+            </CardTitle>
+            <CardDescription>
+              Share a read-only view of your analytics with anyone. Select a property above to manage its share links.
+            </CardDescription>
+          </div>
+          {selectedDomainId && (
+            <Button size="sm" onClick={handleCreate} disabled={createLink.isPending}>
+              <Plus className="h-4 w-4 mr-1" /> New Link
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {!selectedDomainId ? (
+          <p className="text-sm text-muted-foreground">Select a property to manage share links.</p>
+        ) : !links?.length ? (
+          <p className="text-sm text-muted-foreground">No share links yet. Create one to share your dashboard publicly.</p>
+        ) : (
+          <div className="space-y-3">
+            {links.map((link) => (
+              <div key={link.id} className="flex items-center justify-between p-3 rounded-lg border">
+                <div className="flex-1 mr-4">
+                  <p className="text-sm font-medium">{link.name}</p>
+                  <p className="text-xs text-muted-foreground font-mono truncate">
+                    {window.location.origin}/shared/{link.token}
+                  </p>
+                  {link.expires_at && (
+                    <p className="text-xs text-muted-foreground">
+                      Expires: {new Date(link.expires_at).toLocaleDateString()}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" onClick={() => copyLink(link.token)}>
+                    {copiedToken === link.token ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  </Button>
+                  <Button variant="ghost" size="icon" asChild>
+                    <a href={`/shared/${link.token}`} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => deleteLink.mutate(link.id)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

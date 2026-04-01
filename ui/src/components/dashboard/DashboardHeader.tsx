@@ -1,8 +1,15 @@
 import { useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
-import { RefreshCw, ExternalLink, Bot } from 'lucide-react'
+import { RefreshCw, ExternalLink, Bot, Download } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { downloadCSV } from '../../lib/csv-export'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
 import { useDateRangeStore, paramsToDateRange } from '../../stores/useDateRangeStore'
 import { useDomainStore } from '../../stores/useDomainStore'
 import { useFilterStore } from '../../stores/useFilterStore'
@@ -84,6 +91,29 @@ export function DashboardHeader() {
     queryClient.invalidateQueries({ queryKey: ['stats'] })
   }
 
+  const getQs = () => {
+    const p = new URLSearchParams()
+    if (dateRange?.from && dateRange?.to) {
+      p.set('start', dateRange.from.toISOString())
+      p.set('end', dateRange.to.toISOString())
+    } else {
+      p.set('days', '7')
+    }
+    if (selectedDomain) p.set('domain', selectedDomain.domain)
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) p.set(key, value)
+    }
+    return p.toString()
+  }
+
+  const exportData = (type: string) => {
+    const qs = getQs()
+    const data = queryClient.getQueryData<Record<string, unknown>[]>(['stats', type, qs])
+    if (!data?.length) return
+    const domain = selectedDomain?.domain ?? 'analytics'
+    downloadCSV(data, `${domain}-${type}`)
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -128,6 +158,22 @@ export function DashboardHeader() {
             selectedPreset={selectedPreset}
             onPresetChange={setPreset}
           />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline">
+                <Download className="h-4 w-4 mr-2" />
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => exportData('pages')}>Pages</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportData('referrers')}>Referrers</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportData('geo')}>Countries</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportData('devices')}>Devices</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportData('browsers')}>Browsers</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportData('campaigns')}>Campaigns</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button onClick={handleRefresh} size="sm" variant="outline">
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh

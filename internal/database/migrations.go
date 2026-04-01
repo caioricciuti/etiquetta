@@ -675,6 +675,38 @@ func (db *DB) Migrate() error {
 				CREATE INDEX IF NOT EXISTS idx_annotations_category ON annotations(category);
 			`,
 		},
+		{
+			version: 25,
+			sql: `
+				CREATE TABLE IF NOT EXISTS funnels (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					description VARCHAR DEFAULT '',
+					steps VARCHAR NOT NULL DEFAULT '[]',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_funnels_domain ON funnels(domain_id);
+			`,
+		},
+		{
+			version: 26,
+			sql: `
+				CREATE TABLE IF NOT EXISTS share_links (
+					id VARCHAR PRIMARY KEY,
+					token VARCHAR UNIQUE NOT NULL,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL DEFAULT 'Shared Dashboard',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					expires_at BIGINT
+				);
+				CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
+				CREATE INDEX IF NOT EXISTS idx_share_links_domain ON share_links(domain_id);
+			`,
+		},
 	}
 
 	for _, m := range migrations {

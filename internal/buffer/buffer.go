@@ -219,6 +219,7 @@ func (bm *BufferManager) Stats() BufferStats {
 }
 
 // Close gracefully shuts down: stops ticker, flushes all buffers, drains flushCh, waits for writer.
+// Times out after 30 seconds to prevent hanging on DuckDB deadlocks.
 func (bm *BufferManager) Close(_ context.Context) {
 	bm.stopOnce.Do(func() {
 		log.Println("[buffer] Shutting down buffer manager...")
@@ -233,9 +234,19 @@ func (bm *BufferManager) Close(_ context.Context) {
 		// Close the flush channel to signal writer to drain and exit
 		close(bm.flushCh)
 
-		// Wait for writer and ticker goroutines
-		bm.wg.Wait()
-		log.Println("[buffer] Buffer manager stopped")
+		// Wait for writer and ticker goroutines with timeout
+		done := make(chan struct{})
+		go func() {
+			bm.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			log.Println("[buffer] Buffer manager stopped")
+		case <-time.After(30 * time.Second):
+			log.Println("[buffer] Buffer manager shutdown timed out after 30s, forcing exit")
+		}
 	})
 }
 
@@ -257,21 +268,35 @@ func (bm *BufferManager) ResumeWrites() {
 }
 
 // writerLoop reads FlushJobs and loads parquet files into DuckDB.
+// Failed loads are retried up to 3 times with exponential backoff.
 func (bm *BufferManager) writerLoop() {
 	defer bm.wg.Done()
 
+	const maxRetries = 3
+	backoffs := [3]time.Duration{1 * time.Second, 5 * time.Second, 15 * time.Second}
+
 	for job := range bm.flushCh {
-		bm.dbMu.RLock()
-		err := bm.loadParquet(job)
-		bm.dbMu.RUnlock()
+		var err error
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				log.Printf("[buffer] Retrying load into %s (attempt %d/%d)", job.Table, attempt, maxRetries)
+				time.Sleep(backoffs[attempt-1])
+			}
+
+			bm.dbMu.RLock()
+			err = bm.loadParquet(job)
+			bm.dbMu.RUnlock()
+
+			if err == nil {
+				break
+			}
+		}
 
 		if err != nil {
 			atomic.AddInt64(&bm.errorCount, 1)
-			log.Printf("[buffer] Failed to load parquet into %s: %v", job.Table, err)
-			// Keep the file for retry/debugging
+			log.Printf("[buffer] Failed to load parquet into %s after %d retries: %v (file kept: %s)", job.Table, maxRetries, err, job.FilePath)
 			continue
 		}
-		// Clean up temp file on success
 		os.Remove(job.FilePath)
 	}
 }

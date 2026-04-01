@@ -26,7 +26,6 @@ const (
 	WeightAutomationUA    = 35 // puppeteer, selenium
 	WeightShortUA         = 10 // <50 chars, no browser indicator
 	WeightScreenAnomaly   = 15 // 0x0 or impossible values
-	WeightNoPlugins       = 5  // No plugins detected
 	WeightNoLanguages     = 5  // No languages array
 	WeightSuspiciousPath   = 30 // Known attack/exploit path patterns
 	WeightCDPDetected      = 25 // ChromeDriver Protocol properties on document
@@ -166,12 +165,6 @@ func CalculateScore(userAgent string, clientSignals *ClientSignals, isDatacenter
 		if clientSignals.ScreenWidth == 0 && clientSignals.ScreenHeight == 0 {
 			result.Score += WeightScreenAnomaly
 			result.Signals = append(result.Signals, Signal{Name: "screen_anomaly", Weight: WeightScreenAnomaly})
-		}
-
-		// No plugins (common in headless browsers)
-		if clientSignals.Plugins == 0 {
-			result.Score += WeightNoPlugins
-			result.Signals = append(result.Signals, Signal{Name: "no_plugins", Weight: WeightNoPlugins})
 		}
 
 		// No languages

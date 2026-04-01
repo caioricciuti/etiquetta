@@ -399,7 +399,7 @@ func (h *Handlers) GetDomainSnippet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snippet := fmt.Sprintf(`<!-- Etiquetta Analytics -->
-<script defer data-site="%s" src="%s://%s/s.js"></script>`, siteID, scheme, host)
+<script defer data-site="%s" src="%s://%s/s.js?id=%s"></script>`, siteID, scheme, host, siteID)
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"domain":  domain,

@@ -31,6 +31,8 @@ import { Connections } from './pages/Connections'
 import { AdFraud } from './pages/AdFraud'
 import { Errors } from './pages/Errors'
 import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
+import { Funnels } from './pages/Funnels'
+import { SharedDashboard } from './pages/SharedDashboard'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
 import {
@@ -62,6 +64,7 @@ import {
   Video,
   Zap,
   AlertTriangle,
+  GitMerge,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -256,6 +259,7 @@ function AppSidebar() {
     { path: '/', name: 'Dashboard', icon: BarChart3 },
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
     { path: '/events', name: 'Events', icon: Zap },
+    { path: '/funnels', name: 'Funnels', icon: GitMerge, pro: 'funnels' },
     { path: '/errors', name: 'Errors', icon: AlertTriangle, pro: 'error_tracking' },
     { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
@@ -438,6 +442,7 @@ function AppLayout() {
               <Route path="/compare" element={<Compare />} />
               <Route path="/events" element={<Events />} />
               <Route path="/errors" element={<Errors />} />
+              <Route path="/funnels" element={<Funnels />} />
               <Route path="/bots" element={<BotAnalysis />} />
               <Route path="/replays" element={<ReplayList />} />
               <Route path="/replays/settings" element={<ReplaySettings />} />
@@ -492,6 +497,7 @@ function App() {
                   <Login />
                 </PublicRoute>
               } />
+              <Route path="/shared/:token" element={<SharedDashboard />} />
               <Route path="/*" element={
                 <ProtectedRoute>
                   <AppLayout />

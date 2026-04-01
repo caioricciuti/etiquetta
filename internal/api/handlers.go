@@ -2,6 +2,9 @@ package api
 
 import (
 	"bufio"
+	"bytes"
+	"compress/flate"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +25,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/identification"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
 	"github.com/caioricciuti/etiquetta/internal/migrate"
+	"github.com/caioricciuti/etiquetta/internal/settings"
 )
 
 // Version is set from main.go at startup
@@ -105,12 +109,35 @@ func (h *Handlers) ServeTrackerScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inject configuration (read from DB settings, falling back to config file)
-	config := fmt.Sprintf(`window.__ETIQUETTA_CONFIG__={endpoint:"%s",trackPerformance:%t,trackErrors:%t,respectDNT:%t};`,
-		"/i",
-		h.getTrackingBool("track_performance", h.cfg.TrackPerformance) && h.licenseManager.HasFeature(licensing.FeaturePerformance),
-		h.getTrackingBool("track_errors", h.cfg.TrackErrors) && h.licenseManager.HasFeature(licensing.FeatureErrorTracking),
-		h.getTrackingBool("respect_dnt", h.cfg.RespectDNT),
+	// Global defaults from DB settings, falling back to config file
+	trackPerf := h.getTrackingBool("track_performance", h.cfg.TrackPerformance) && h.licenseManager.HasFeature(licensing.FeaturePerformance)
+	trackErrors := h.getTrackingBool("track_errors", h.cfg.TrackErrors) && h.licenseManager.HasFeature(licensing.FeatureErrorTracking)
+	respectDNT := h.getTrackingBool("respect_dnt", h.cfg.RespectDNT)
+	trackingMode := "cookieless"
+
+	// If site_id provided, apply per-domain overrides
+	if siteID := r.URL.Query().Get("id"); siteID != "" {
+		var domainID string
+		err := h.db.Conn().QueryRow("SELECT id FROM domains WHERE site_id = ? AND is_active = 1", siteID).Scan(&domainID)
+		if err == nil && domainID != "" {
+			svc := settings.New(h.db.Conn())
+			if v := svc.GetForDomainWithDefault(domainID, "tracking_mode", "cookieless"); v == "cookie" || v == "localStorage" {
+				trackingMode = v
+			}
+			if v, err := svc.GetForDomain(domainID, "track_performance"); err == nil && v != "" {
+				trackPerf = (v == "true" || v == "1") && h.licenseManager.HasFeature(licensing.FeaturePerformance)
+			}
+			if v, err := svc.GetForDomain(domainID, "track_errors"); err == nil && v != "" {
+				trackErrors = (v == "true" || v == "1") && h.licenseManager.HasFeature(licensing.FeatureErrorTracking)
+			}
+			if v, err := svc.GetForDomain(domainID, "respect_dnt"); err == nil && v != "" {
+				respectDNT = v == "true" || v == "1"
+			}
+		}
+	}
+
+	config := fmt.Sprintf(`window.__ETIQUETTA_CONFIG__={endpoint:"%s",trackPerformance:%t,trackErrors:%t,respectDNT:%t,trackingMode:"%s"};`,
+		"/i", trackPerf, trackErrors, respectDNT, trackingMode,
 	)
 
 	w.Write([]byte(config))
@@ -127,12 +154,40 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Parse events (NDJSON format - one event per line)
+	// Parse events (NDJSON format - one event per line, possibly encoded)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Failed to read body")
 		return
 	}
+
+	// Decode payload based on Content-Type
+	contentType := r.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(contentType, "application/octet-stream"):
+		// Deflate-compressed payload from CompressionStream
+		reader := flate.NewReader(bytes.NewReader(body))
+		decoded, decErr := io.ReadAll(io.LimitReader(reader, 1<<20))
+		reader.Close()
+		if decErr != nil {
+			writeError(w, http.StatusBadRequest, "Failed to decompress body")
+			return
+		}
+		body = decoded
+	case strings.HasPrefix(contentType, "text/x-etq"):
+		// XOR + base64 encoded payload (fallback for older browsers)
+		decoded, decErr := base64.StdEncoding.DecodeString(string(body))
+		if decErr != nil {
+			writeError(w, http.StatusBadRequest, "Failed to decode body")
+			return
+		}
+		xorKey := []byte{0x4e, 0x71, 0x63, 0x58}
+		for i := range decoded {
+			decoded[i] ^= xorKey[i%len(xorKey)]
+		}
+		body = decoded
+	}
+	// default: raw NDJSON (text/plain) — existing behavior, no decoding needed
 
 	// Get Origin/Referer for domain validation
 	origin := r.Header.Get("Origin")
@@ -165,9 +220,6 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 
 	// Generate IP hash for tracking (privacy-preserving)
 	ipHash := hashIP(clientIP)
-
-	// Generate server-side session ID
-	sessionID := h.idGen.GenerateSessionID(clientIP, userAgent)
 
 	// Parse each line as a separate event
 	var events []*database.Event
@@ -212,6 +264,10 @@ func (h *Handlers) Ingest(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		// Extract visitor hash for session ID generation (differentiates users sharing IP+UA)
+		visitorHash, _ := raw["visitor_hash"].(string)
+		sessionID := h.idGen.GenerateSessionID(clientIP, userAgent, visitorHash)
 
 		eventType, _ := raw["type"].(string)
 

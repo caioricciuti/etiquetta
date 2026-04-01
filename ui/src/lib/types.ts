@@ -750,3 +750,35 @@ export const ANNOTATION_CATEGORIES: Record<AnnotationCategory, { label: string; 
   content:     { label: 'Content',     color: '#06b6d4' },
   other:       { label: 'Other',       color: '#6b7280' },
 }
+
+export interface FunnelStep {
+  event_type: 'pageview' | 'custom'
+  event_name?: string
+  page_path?: string
+}
+
+export interface Funnel {
+  id: string
+  domain_id: string
+  name: string
+  description: string
+  steps: FunnelStep[]
+  created_by: string
+  created_at: number
+  updated_at: number
+}
+
+export interface FunnelStepMetric {
+  step: number
+  name: string
+  visitors: number
+  completions: number
+  drop_off: number
+  rate: number
+}
+
+export interface FunnelMetricsResponse {
+  funnel_id: string
+  name: string
+  steps: FunnelStepMetric[]
+}

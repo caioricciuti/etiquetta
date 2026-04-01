@@ -140,6 +140,10 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 	// Version endpoint (public)
 	r.Get("/api/version", h.GetVersion)
 
+	// ========== Shared dashboards (public, token-validated) ==========
+	r.Get("/api/shared/dashboard/{shareToken}", h.GetSharedDashboard)
+	r.Get("/api/shared/stats/{shareToken}/*", h.SharedStatsProxy)
+
 	// ========== API routes ==========
 	r.Route("/api", func(r chi.Router) {
 
@@ -242,6 +246,11 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Delete("/domains/{id}", h.DeleteDomain)
 			r.Get("/domains/{id}/snippet", h.GetDomainSnippet)
 
+			// Share links
+			r.Get("/share-links", h.ListShareLinks)
+			r.Post("/share-links", h.CreateShareLink)
+			r.Delete("/share-links/{id}", h.DeleteShareLink)
+
 			// Annotations
 			r.Get("/annotations", h.ListAnnotations)
 			r.Post("/annotations", h.CreateAnnotation)
@@ -266,6 +275,16 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureExport))
 				r.Get("/export/events", h.ExportEvents)
+			})
+
+			// Pro features - Funnels
+			r.Group(func(r chi.Router) {
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureFunnels))
+				r.Get("/funnels", h.ListFunnels)
+				r.Post("/funnels", h.CreateFunnel)
+				r.Put("/funnels/{id}", h.UpdateFunnel)
+				r.Delete("/funnels/{id}", h.DeleteFunnel)
+				r.Get("/funnels/{id}/metrics", h.GetFunnelMetrics)
 			})
 
 			// Pro features - Ad Fraud Detection

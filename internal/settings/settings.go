@@ -46,6 +46,7 @@ var domainSettingsKeys = map[string]bool{
 	"replay_mask_inputs":      true,
 	"replay_max_duration_sec": true,
 	"conversion_event":        true,
+	"tracking_mode":           true,
 }
 
 // IsDomainScopedKey returns true if the key can be overridden per domain

@@ -116,7 +116,51 @@
     return hash(signals, 0) + hash(signals, 1);
   }
 
-  const VISITOR_HASH = getVisitorHash();
+  // Visitor identification based on tracking mode
+  const TRACKING_MODE = CONFIG.trackingMode || "cookieless";
+  const VID_KEY = "_etq_vid";
+
+  function getCookie(name) {
+    var match = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function setCookie(name, value, days) {
+    var d = new Date();
+    d.setTime(d.getTime() + days * 864e5);
+    document.cookie = name + "=" + encodeURIComponent(value) + ";expires=" + d.toUTCString() + ";path=/;SameSite=Lax";
+  }
+
+  function deleteCookie(name) {
+    document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;SameSite=Lax";
+  }
+
+  function getOrCreateVisitorId() {
+    if (TRACKING_MODE === "cookie") {
+      try { localStorage.removeItem(VID_KEY); } catch(e) {}
+      var existing = getCookie(VID_KEY);
+      if (existing) return existing;
+      var vid = uuid();
+      setCookie(VID_KEY, vid, 365);
+      return vid;
+    }
+    if (TRACKING_MODE === "localStorage") {
+      deleteCookie(VID_KEY);
+      try {
+        var existing = localStorage.getItem(VID_KEY);
+        if (existing) return existing;
+        var vid = uuid();
+        localStorage.setItem(VID_KEY, vid);
+        return vid;
+      } catch(e) { /* blocked — fall through to cookieless */ }
+    }
+    // Cookieless: clean up any previous persistence
+    deleteCookie(VID_KEY);
+    try { localStorage.removeItem(VID_KEY); } catch(e) {}
+    return getVisitorHash();
+  }
+
+  var VISITOR_HASH = getOrCreateVisitorId();
 
   // Bot detection signals (weight checks)
   function getBotSignals() {
@@ -164,6 +208,35 @@
     }
   }
 
+  // Payload encoding helpers
+  var isUnloading = false;
+
+  function xorEncode(str) {
+    var key = [0x4e, 0x71, 0x63, 0x58];
+    var bytes = new Uint8Array(str.length);
+    for (var i = 0; i < str.length; i++) {
+      bytes[i] = str.charCodeAt(i) ^ key[i & 3];
+    }
+    var binary = "";
+    for (var j = 0; j < bytes.length; j++) {
+      binary += String.fromCharCode(bytes[j]);
+    }
+    return btoa(binary);
+  }
+
+  function sendBlob(blob, type) {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(INGEST_URL, new Blob([blob], { type: type }));
+    } else {
+      fetch(INGEST_URL, { method: "POST", body: blob, keepalive: true, headers: { "Content-Type": type } }).catch(function() {});
+    }
+  }
+
+  function sendXor(ndjson) {
+    var encoded = xorEncode(ndjson);
+    sendBlob(encoded, "text/x-etq");
+  }
+
   function flush() {
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -171,13 +244,18 @@
     }
     if (!queue.length) return;
 
-    const batch = queue.splice(0, MAX_BATCH);
-    const payload = batch.map(e => JSON.stringify({ type: e.type, ...e.data })).join("\n");
+    var batch = queue.splice(0, MAX_BATCH);
+    var ndjson = batch.map(function(e) { return JSON.stringify({ type: e.type, ...e.data }); }).join("\n");
 
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon(INGEST_URL, new Blob([payload], { type: "text/plain" }));
+    // During page unload, use sync XOR path (CompressionStream is async and may not resolve)
+    if (!isUnloading && typeof CompressionStream !== "undefined") {
+      new Response(new Blob([ndjson]).stream().pipeThrough(new CompressionStream("deflate"))).blob().then(function(compressed) {
+        sendBlob(compressed, "application/octet-stream");
+      }).catch(function() {
+        sendXor(ndjson);
+      });
     } else {
-      fetch(INGEST_URL, { method: "POST", body: payload, keepalive: true }).catch(() => {});
+      sendXor(ndjson);
     }
     log("Flushed", batch.length, "events");
   }
@@ -313,8 +391,9 @@
     }, { capture: true });
   }
 
-  // Error tracking
+  // Error tracking (capped to prevent memory leaks on long-lived SPAs)
   const seenErrors = new Set();
+  const SEEN_ERRORS_MAX = 200;
 
   function setupErrors() {
     if (!TRACK_ERRORS) return;
@@ -323,6 +402,7 @@
       if (e.filename) {
         const fp = hash(e.message + "|" + e.filename + "|" + e.lineno + "|" + e.colno);
         if (seenErrors.has(fp)) return;
+        if (seenErrors.size >= SEEN_ERRORS_MAX) seenErrors.clear();
         seenErrors.add(fp);
         send("error", {
           error_type: "javascript",
@@ -534,8 +614,18 @@
       trackPageview();
     }
 
-    window.addEventListener("beforeunload", flush);
-    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", function() { isUnloading = true; flush(); });
+    window.addEventListener("pagehide", function() { isUnloading = true; flush(); });
+
+    // bfcache: when page is restored from back-forward cache, re-track pageview
+    window.addEventListener("pageshow", function(e) {
+      if (e.persisted) {
+        isUnloading = false;
+        trackPageview({ force: true });
+        log("Page restored from bfcache");
+      }
+    });
+
     log("Etiquetta initialized");
   }
 
@@ -561,6 +651,13 @@
           startTracking();
         }
       });
+      return;
+    }
+
+    // Defer tracking if page is prerendering (Speculation Rules API)
+    if (document.prerendering) {
+      log("Page is prerendering, deferring tracking");
+      document.addEventListener("prerenderingchange", function() { startTracking(); }, { once: true });
       return;
     }
 

@@ -27,14 +27,15 @@ func New(secretKey string, sessionTimeoutMinutes int) *Generator {
 	}
 }
 
-// GenerateSessionID creates a session ID based on IP, UA, and time window
-// This is GDPR-compliant as it's server-side only (no cookies)
-func (g *Generator) GenerateSessionID(ip, userAgent string) string {
+// GenerateSessionID creates a session ID based on IP, UA, visitor hash, and time window.
+// The visitor hash differentiates users who share the same IP and browser (e.g. corporate offices).
+// This is GDPR-compliant as it's server-side only (no cookies).
+func (g *Generator) GenerateSessionID(ip, userAgent, visitorHash string) string {
 	// Round timestamp to session window
 	windowStart := time.Now().Truncate(g.sessionTimeout)
 
-	// Create HMAC of IP + UA + time window
-	data := ip + "|" + userAgent + "|" + windowStart.Format(time.RFC3339)
+	// Create HMAC of IP + UA + visitor hash + time window
+	data := ip + "|" + userAgent + "|" + visitorHash + "|" + windowStart.Format(time.RFC3339)
 	return g.hmacHash(data)
 }
 
