@@ -7,6 +7,7 @@ import { fetchAPI } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Globe, Copy, Trash2, Plus, Check, Link2, ExternalLink } from 'lucide-react'
 import { SettingsLayout } from './SettingsLayout'
 
@@ -138,17 +139,16 @@ export function DomainsSettings() {
 }
 
 function ShareLinksCard() {
+  const { data: domains } = useDomains()
   const selectedDomainId = useDomainStore(s => s.selectedDomainId)
+  const setSelectedDomainId = useDomainStore(s => s.setSelectedDomainId)
   const { data: links } = useShareLinks()
   const createLink = useCreateShareLink()
   const deleteLink = useDeleteShareLink()
   const [copiedToken, setCopiedToken] = useState<string | null>(null)
 
   function handleCreate() {
-    if (!selectedDomainId) {
-      toast.error('Select a property first')
-      return
-    }
+    if (!selectedDomainId) return
     createLink.mutate({ domain_id: selectedDomainId }, {
       onSuccess: () => toast.success('Share link created'),
       onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to create'),
@@ -173,19 +173,31 @@ function ShareLinksCard() {
               Public Dashboard Links
             </CardTitle>
             <CardDescription>
-              Share a read-only view of your analytics with anyone. Select a property above to manage its share links.
+              Share a read-only view of your analytics with anyone.
             </CardDescription>
           </div>
-          {selectedDomainId && (
-            <Button size="sm" onClick={handleCreate} disabled={createLink.isPending}>
-              <Plus className="h-4 w-4 mr-1" /> New Link
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            <Select value={selectedDomainId ?? ''} onValueChange={setSelectedDomainId}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="Select property" />
+              </SelectTrigger>
+              <SelectContent>
+                {domains?.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedDomainId && (
+              <Button size="sm" onClick={handleCreate} disabled={createLink.isPending}>
+                <Plus className="h-4 w-4 mr-1" /> New Link
+              </Button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         {!selectedDomainId ? (
-          <p className="text-sm text-muted-foreground">Select a property to manage share links.</p>
+          <p className="text-sm text-muted-foreground">Select a property to manage its share links.</p>
         ) : !links?.length ? (
           <p className="text-sm text-muted-foreground">No share links yet. Create one to share your dashboard publicly.</p>
         ) : (

@@ -33,11 +33,12 @@ interface PageData {
 interface ReferrerData {
   source: string
   visits: number
+  visitors: number
 }
 
 interface GeoData {
   country: string
-  visits: number
+  visitors: number
 }
 
 function useSharedParams() {
@@ -211,7 +212,7 @@ export function SharedDashboard() {
                 {geo.slice(0, 12).map((g, i) => (
                   <div key={i} className="flex items-center justify-between text-sm p-2 bg-muted/50 rounded">
                     <span>{g.country || 'Unknown'}</span>
-                    <span className="text-muted-foreground">{g.visits.toLocaleString()}</span>
+                    <span className="text-muted-foreground">{g.visitors.toLocaleString()}</span>
                   </div>
                 ))}
               </div>
