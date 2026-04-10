@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -15,7 +16,8 @@ import (
 
 // GetStatsVitals returns web vitals (Pro feature)
 func (h *Handlers) GetStatsVitals(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	where := "timestamp >= ? AND timestamp <= ? AND bot_category = 'human'"
@@ -51,7 +53,8 @@ func (h *Handlers) GetStatsVitals(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsErrors returns error summary (Pro feature)
 func (h *Handlers) GetStatsErrors(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	where := "timestamp >= ? AND timestamp <= ?"
@@ -94,7 +97,8 @@ func (h *Handlers) GetStatsErrors(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsErrorDetail returns individual error occurrences for a specific error hash (Pro feature)
 func (h *Handlers) GetStatsErrorDetail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	errorHash := r.URL.Query().Get("error_hash")
 
@@ -174,7 +178,8 @@ func (h *Handlers) GetStatsErrorDetail(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsErrorTimeseries returns error occurrences over time for a specific error hash (Pro feature)
 func (h *Handlers) GetStatsErrorTimeseries(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	errorHash := r.URL.Query().Get("error_hash")
 
@@ -239,7 +244,8 @@ func (h *Handlers) GetStatsErrorTimeseries(w http.ResponseWriter, r *http.Reques
 
 // ExportEvents exports events as JSON (Pro feature)
 func (h *Handlers) ExportEvents(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	// Get date range from query params
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
@@ -365,7 +371,8 @@ func (h *Handlers) GetFraudSummary(w http.ResponseWriter, r *http.Request) {
 
 // GetAvailableEventNames returns distinct custom event names for conversion event selection
 func (h *Handlers) GetAvailableEventNames(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	domain := getDomainParam(r)
 
 	query := `SELECT DISTINCT event_name FROM events

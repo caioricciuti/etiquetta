@@ -42,10 +42,21 @@ type Handlers struct {
 	connStore      *connections.Store
 	syncManager    *connections.SyncManager
 	migrateManager *migrate.JobManager
+	dbMu           *sync.RWMutex // guards DuckDB during compaction; handlers take RLock
 
 	// SSE subscribers
 	sseClients map[chan []byte]bool
 	sseMu      sync.RWMutex
+}
+
+// dbReadLockMiddleware acquires a read-lock on dbMu for the duration of the
+// request, preventing DuckDB heap corruption when compaction holds the write lock.
+func (h *Handlers) dbReadLockMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.dbMu.RLock()
+		defer h.dbMu.RUnlock()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // logAudit records an admin action to the audit log (fire-and-forget)

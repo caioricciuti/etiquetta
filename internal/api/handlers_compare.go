@@ -12,7 +12,8 @@ import (
 
 // GetStatsCompare returns period-over-period comparison data in a single response.
 func (h *Handlers) GetStatsCompare(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	// Parse comparison period or default to previous period

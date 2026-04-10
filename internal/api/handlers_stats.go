@@ -126,7 +126,8 @@ func (h *Handlers) queryOverviewStats(ctx context.Context, f statsFilter) map[st
 
 // GetStatsOverview returns main dashboard stats with period comparison
 func (h *Handlers) GetStatsOverview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	live := time.Now().Add(-5 * time.Minute).UnixMilli()
 
@@ -154,7 +155,8 @@ func (h *Handlers) GetStatsOverview(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsTimeseries returns traffic over time
 func (h *Handlers) GetStatsTimeseries(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'pageview'", f.startMs, f.endMs)
 
@@ -191,7 +193,8 @@ func (h *Handlers) GetStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsPages returns top pages
 func (h *Handlers) GetStatsPages(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'pageview'", f.startMs, f.endMs)
 
@@ -226,7 +229,8 @@ func (h *Handlers) GetStatsPages(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsReferrers returns traffic sources with actual domains
 func (h *Handlers) GetStatsReferrers(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'pageview'", f.startMs, f.endMs)
 
@@ -269,7 +273,8 @@ func (h *Handlers) GetStatsReferrers(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsGeo returns geographic distribution
 func (h *Handlers) GetStatsGeo(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ?", f.startMs, f.endMs)
 
@@ -303,7 +308,8 @@ func (h *Handlers) GetStatsGeo(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsMapData returns geographic data with coordinates for map visualization
 func (h *Handlers) GetStatsMapData(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND geo_latitude IS NOT NULL AND geo_latitude != 0", f.startMs, f.endMs)
 
@@ -348,7 +354,8 @@ func (h *Handlers) GetStatsMapData(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsDevices returns device breakdown
 func (h *Handlers) GetStatsDevices(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ?", f.startMs, f.endMs)
 
@@ -381,7 +388,8 @@ func (h *Handlers) GetStatsDevices(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsBrowsers returns browser breakdown
 func (h *Handlers) GetStatsBrowsers(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ?", f.startMs, f.endMs)
 
@@ -415,7 +423,8 @@ func (h *Handlers) GetStatsBrowsers(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsCampaigns returns UTM campaign breakdown
 func (h *Handlers) GetStatsCampaigns(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'pageview'", f.startMs, f.endMs)
 
@@ -457,7 +466,8 @@ func (h *Handlers) GetStatsCampaigns(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsCustomEvents returns custom event breakdown
 func (h *Handlers) GetStatsCustomEvents(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'custom'", f.startMs, f.endMs)
 
@@ -499,7 +509,8 @@ func (h *Handlers) GetStatsCustomEvents(w http.ResponseWriter, r *http.Request) 
 
 // GetStatsEventsSummary returns all events grouped by event_type + event_name
 func (h *Handlers) GetStatsEventsSummary(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	// Optional event_type filter
@@ -603,7 +614,8 @@ func (h *Handlers) GetStatsEventsSummary(w http.ResponseWriter, r *http.Request)
 
 // GetStatsEventsTimeseries returns timeseries for a specific event or all events
 func (h *Handlers) GetStatsEventsTimeseries(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	eventName := r.URL.Query().Get("event_name")
@@ -656,7 +668,8 @@ func (h *Handlers) GetStatsEventsTimeseries(w http.ResponseWriter, r *http.Reque
 
 // GetStatsEventsProps returns top property values for a given event name
 func (h *Handlers) GetStatsEventsProps(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 
 	eventName := r.URL.Query().Get("event_name")
@@ -733,7 +746,8 @@ func (h *Handlers) GetStatsEventsProps(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsOutbound returns outbound link clicks
 func (h *Handlers) GetStatsOutbound(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	f := parseStatsFilter(r)
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'click' AND event_name = 'outbound'", f.startMs, f.endMs)
 
@@ -775,7 +789,8 @@ func (h *Handlers) GetStatsOutbound(w http.ResponseWriter, r *http.Request) {
 
 // GetStatsCalendarHeatmap returns daily session counts for calendar heatmap overlay
 func (h *Handlers) GetStatsCalendarHeatmap(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	startMs, endMs := getDateRangeParams(r, 60)
 	domain := getDomainParam(r)
 
@@ -816,7 +831,8 @@ func (h *Handlers) GetStatsCalendarHeatmap(w http.ResponseWriter, r *http.Reques
 
 // GetStatsBots returns bot traffic breakdown (intentionally shows ALL traffic including bots)
 func (h *Handlers) GetStatsBots(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	startMs, endMs := getDateRangeParams(r, 7)
 	domain := getDomainParam(r)
 

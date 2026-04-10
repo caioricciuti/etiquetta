@@ -92,6 +92,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		connStore:      connStore,
 		syncManager:    syncManager,
 		migrateManager: migrateManager,
+		dbMu:           bufferMgr.DBMu(),
 	}
 
 	// Wire up API key validation so Bearer etq_... tokens work through RequireAuth
@@ -141,8 +142,8 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 	r.Get("/api/version", h.GetVersion)
 
 	// ========== Shared dashboards (public, token-validated) ==========
-	r.Get("/api/shared/dashboard/{shareToken}", h.GetSharedDashboard)
-	r.Get("/api/shared/stats/{shareToken}/*", h.SharedStatsProxy)
+	r.With(h.dbReadLockMiddleware).Get("/api/shared/dashboard/{shareToken}", h.GetSharedDashboard)
+	r.With(h.dbReadLockMiddleware).Get("/api/shared/stats/{shareToken}/*", h.SharedStatsProxy)
 
 	// ========== API routes ==========
 	r.Route("/api", func(r chi.Router) {
@@ -166,9 +167,17 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		// License info (public - needed for UI to check features)
 		r.Get("/license", h.GetLicense)
 
-		// Protected routes
+		// SSE endpoint — auth-protected but NOT db-read-locked (long-lived connection
+		// would block compaction if it held RLock for its entire lifetime).
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.RequireAuth)
+			r.Get("/events/stream", h.EventStream)
+		})
+
+		// Protected routes — db read lock prevents heap corruption during compaction
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware.RequireAuth)
+			r.Use(h.dbReadLockMiddleware)
 
 			// License management
 			r.Post("/license", h.UploadLicense)
@@ -212,9 +221,6 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			// Database access
 			r.Get("/db", h.ServeDatabase)
 			r.Get("/db/info", h.GetDatabaseInfo)
-
-			// Real-time events via SSE
-			r.Get("/events/stream", h.EventStream)
 
 			// Stats endpoints
 			r.Get("/stats/overview", h.GetStatsOverview)

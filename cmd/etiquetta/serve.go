@@ -309,7 +309,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		Addr:         cfg.ListenAddr,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 0, // disabled: SSE connections are long-lived; query timeouts enforce per-request limits
 		IdleTimeout:  120 * time.Second,
 	}
 
