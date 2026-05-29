@@ -241,6 +241,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/bots", h.GetStatsBots)                        // Bot traffic breakdown
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
 			r.Get("/stats/compare", h.GetStatsCompare)                  // Period comparison
+			r.Get("/stats/live", h.GetStatsLive)                        // Real-time snapshot
 
 			// Heatmaps (click + scroll) — built from existing click_x/click_y + scroll data
 			r.Get("/stats/heatmap/pages", h.GetStatsHeatmapPages)
