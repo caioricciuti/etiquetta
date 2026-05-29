@@ -32,6 +32,7 @@ import { AdFraud } from './pages/AdFraud'
 import { Errors } from './pages/Errors'
 import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
 import { Funnels } from './pages/Funnels'
+import { Heatmaps } from './pages/Heatmaps'
 import { SharedDashboard } from './pages/SharedDashboard'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
@@ -65,6 +66,7 @@ import {
   Zap,
   AlertTriangle,
   GitMerge,
+  Flame,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -262,6 +264,7 @@ function AppSidebar() {
     { path: '/funnels', name: 'Funnels', icon: GitMerge, pro: 'funnels' },
     { path: '/errors', name: 'Errors', icon: AlertTriangle, pro: 'error_tracking' },
     { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
+    { path: '/heatmaps', name: 'Heatmaps', icon: Flame },
     { path: '/bots', name: 'Bot Analysis', icon: Bot },
     { path: '/consent', name: 'Consent', icon: Shield, pro: 'consent' },
     { path: '/connections', name: 'Connections', icon: Cable, pro: 'connections' },
@@ -443,6 +446,7 @@ function AppLayout() {
               <Route path="/events" element={<Events />} />
               <Route path="/errors" element={<Errors />} />
               <Route path="/funnels" element={<Funnels />} />
+              <Route path="/heatmaps" element={<Heatmaps />} />
               <Route path="/bots" element={<BotAnalysis />} />
               <Route path="/replays" element={<ReplayList />} />
               <Route path="/replays/settings" element={<ReplaySettings />} />

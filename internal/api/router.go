@@ -241,6 +241,11 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
 			r.Get("/stats/compare", h.GetStatsCompare)                   // Period comparison
 
+			// Heatmaps (click + scroll) — built from existing click_x/click_y + scroll data
+			r.Get("/stats/heatmap/pages", h.GetStatsHeatmapPages)
+			r.Get("/stats/heatmap/clicks", h.GetStatsHeatmapClicks)
+			r.Get("/stats/heatmap/scroll", h.GetStatsHeatmapScroll)
+
 			// API token management
 			r.Post("/tokens", h.CreateAPIToken)
 			r.Get("/tokens", h.ListAPITokens)
