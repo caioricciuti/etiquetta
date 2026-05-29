@@ -93,6 +93,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		syncManager:    syncManager,
 		migrateManager: migrateManager,
 		dbMu:           bufferMgr.DBMu(),
+		useRollups:     os.Getenv("ETIQUETTA_USE_ROLLUPS") == "true",
 	}
 
 	// Wire up API key validation so Bearer etq_... tokens work through RequireAuth
@@ -237,9 +238,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Get("/stats/events/timeseries", h.GetStatsEventsTimeseries)
 			r.Get("/stats/events/props", h.GetStatsEventsProps)
 			r.Get("/stats/outbound", h.GetStatsOutbound)
-			r.Get("/stats/bots", h.GetStatsBots)                       // Bot traffic breakdown
+			r.Get("/stats/bots", h.GetStatsBots)                        // Bot traffic breakdown
 			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
-			r.Get("/stats/compare", h.GetStatsCompare)                   // Period comparison
+			r.Get("/stats/compare", h.GetStatsCompare)                  // Period comparison
 
 			// Heatmaps (click + scroll) — built from existing click_x/click_y + scroll data
 			r.Get("/stats/heatmap/pages", h.GetStatsHeatmapPages)
@@ -528,4 +529,3 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 
 	return r
 }
-

@@ -82,6 +82,13 @@ func getDomainParam(r *http.Request) string {
 	return r.URL.Query().Get("domain")
 }
 
+// msToDateKey converts a millisecond timestamp to the UTC "YYYY-MM-DD" key used
+// by rollup_daily, matching DuckDB's
+// strftime('%Y-%m-%d', to_timestamp(timestamp/1000)::TIMESTAMP).
+func msToDateKey(ms int64) string {
+	return time.UnixMilli(ms).UTC().Format("2006-01-02")
+}
+
 // getDateRangeParams parses start/end ISO strings or falls back to days parameter
 // Returns startMs and endMs as millisecond timestamps for queries
 func getDateRangeParams(r *http.Request, defaultDays int) (startMs, endMs int64) {

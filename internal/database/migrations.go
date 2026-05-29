@@ -707,6 +707,31 @@ func (db *DB) Migrate() error {
 				CREATE INDEX IF NOT EXISTS idx_share_links_domain ON share_links(domain_id);
 			`,
 		},
+		{
+			version: 27,
+			sql: `
+				-- Pre-aggregation rollup for fast dashboards (idea #1).
+				-- One row per (day, domain, bot_category). Stored metrics are EXACT at
+				-- day granularity. Additive metrics may be summed across days; unique
+				-- visitors are NOT additive, so the daily 'visitors' column is exact
+				-- per-day but the query layer keeps multi-day uniques on the raw path.
+				CREATE TABLE IF NOT EXISTS rollup_daily (
+					date_key VARCHAR NOT NULL,
+					domain VARCHAR NOT NULL,
+					bot_category VARCHAR NOT NULL,
+					pageviews BIGINT DEFAULT 0,
+					events BIGINT DEFAULT 0,
+					sessions BIGINT DEFAULT 0,
+					visitors BIGINT DEFAULT 0,
+					bounce_sessions BIGINT DEFAULT 0,
+					visible_ms_sum BIGINT DEFAULT 0,
+					engagement_count BIGINT DEFAULT 0,
+					updated_at BIGINT NOT NULL,
+					PRIMARY KEY (date_key, domain, bot_category)
+				);
+				CREATE INDEX IF NOT EXISTS idx_rollup_daily_domain_date ON rollup_daily(domain, date_key);
+			`,
+		},
 	}
 
 	for _, m := range migrations {

@@ -47,6 +47,11 @@ type Handlers struct {
 	// SSE subscribers
 	sseClients map[chan []byte]bool
 	sseMu      sync.RWMutex
+
+	// useRollups routes additive dashboard metrics to rollup_daily for speed.
+	// Opt-in via ETIQUETTA_USE_ROLLUPS=true; default false keeps byte-identical
+	// behavior. Rollup-backed handlers always fall back to raw events on error.
+	useRollups bool
 }
 
 // dbReadLockMiddleware acquires a read-lock on dbMu for the duration of the

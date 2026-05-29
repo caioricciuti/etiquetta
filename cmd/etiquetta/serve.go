@@ -28,6 +28,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/licensing"
 	"github.com/caioricciuti/etiquetta/internal/migrate"
 	"github.com/caioricciuti/etiquetta/internal/replay"
+	"github.com/caioricciuti/etiquetta/internal/rollup"
 	"github.com/caioricciuti/etiquetta/internal/settings"
 	"github.com/caioricciuti/etiquetta/ui"
 )
@@ -286,6 +287,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	// compacted tables (events, performance, errors, visitor_sessions) take read lock.
 	dbMu := bufferMgr.DBMu()
 
+	// Start rollup refresher: pre-aggregates daily summaries for fast dashboards.
+	rollupRefresher := rollup.NewRefresher(db.Conn(), dbMu, 10*time.Minute)
+	rollupRefresher.Start()
+
 	// Start data retention cleanup goroutine
 	go func() {
 		dbMu.RLock()
@@ -332,6 +337,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		batchAnalyzer.Stop()
 		syncManager.Stop()
 		compactCancel()
+		rollupRefresher.Stop()
 
 		// Flush all buffered data to DuckDB
 		log.Println("Flushing buffers...")

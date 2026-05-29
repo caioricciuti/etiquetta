@@ -158,6 +158,17 @@ func (h *Handlers) GetStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	f := parseStatsFilter(r)
+
+	// Fast path: serve per-day pageviews+visitors from rollup_daily when eligible.
+	// Exact for day-aligned ranges and single-category bot filters; falls back to
+	// the raw query below on any error or ineligibility.
+	if cat, ok := h.rollupEligible(f); ok {
+		if result, served := h.rollupTimeseries(ctx, f, cat); served {
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+	}
+
 	where, args := f.where("timestamp >= ? AND timestamp <= ? AND event_type = 'pageview'", f.startMs, f.endMs)
 
 	rows, err := h.db.Conn().QueryContext(ctx, `
@@ -605,10 +616,10 @@ func (h *Handlers) GetStatsEventsSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"events":       events,
-		"total":        currentTotal,
-		"prev_total":   prevTotal,
-		"type_counts":  typeCounts,
+		"events":      events,
+		"total":       currentTotal,
+		"prev_total":  prevTotal,
+		"type_counts": typeCounts,
 	})
 }
 
