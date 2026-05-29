@@ -76,11 +76,11 @@ func (h *Handlers) GetStatsHeatmapClicks(w http.ResponseWriter, r *http.Request)
 	query := fmt.Sprintf(`
 		SELECT
 			(click_x // %d) * %d AS bx,
-			(click_y // %d) * %d AS by,
+			(click_y // %d) * %d AS gy,
 			COUNT(*) AS c
 		FROM events
 		WHERE %s
-		GROUP BY bx, by
+		GROUP BY bx, gy
 		ORDER BY c DESC
 		LIMIT 5000
 	`, bucket, bucket, bucket, bucket, where)
