@@ -257,6 +257,9 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Delete("/domains/{id}", h.DeleteDomain)
 			r.Get("/domains/{id}/snippet", h.GetDomainSnippet)
 
+			// Install debugger — confirms data is flowing + shows what's collected
+			r.Get("/install/status", h.GetInstallStatus)
+
 			// Share links
 			r.Get("/share-links", h.ListShareLinks)
 			r.Post("/share-links", h.CreateShareLink)

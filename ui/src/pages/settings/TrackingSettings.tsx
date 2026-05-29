@@ -1,14 +1,14 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { fetchAPI } from '@/lib/api'
-import { Navigate } from 'react-router-dom'
+import { Navigate, Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Activity, Database, Loader2, Brain, Info } from 'lucide-react'
+import { Activity, Database, Loader2, Brain, Info, PlugZap } from 'lucide-react'
 import { toast } from 'sonner'
 import { useLicense } from '@/hooks/useLicenseQuery'
 import { useDomainStore } from '@/stores/useDomainStore'
@@ -221,7 +221,13 @@ export function TrackingSettings() {
           </div>
 
           {/* Save */}
-          <div className="flex justify-end pt-4 border-t">
+          <div className="flex items-center justify-between pt-4 border-t">
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/install-check">
+                <PlugZap className="mr-2 h-4 w-4" />
+                Verify installation →
+              </Link>
+            </Button>
             <Button onClick={handleSave} disabled={updateSettings.isPending || !hasChanges}>
               {updateSettings.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save Settings

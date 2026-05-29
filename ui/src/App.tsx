@@ -33,6 +33,7 @@ import { Errors } from './pages/Errors'
 import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
 import { Funnels } from './pages/Funnels'
 import { Heatmaps } from './pages/Heatmaps'
+import { InstallCheck } from './pages/InstallCheck'
 import { SharedDashboard } from './pages/SharedDashboard'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
@@ -67,6 +68,7 @@ import {
   AlertTriangle,
   GitMerge,
   Flame,
+  PlugZap,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -271,6 +273,7 @@ function AppSidebar() {
     { path: '/fraud', name: 'Ad Fraud', icon: ShieldAlert, pro: 'ad_fraud' },
     { path: '/privacy', name: 'Privacy Center', icon: Fingerprint, adminOnly: true },
     { path: '/explorer', name: 'Data Explorer', icon: Database, adminOnly: true },
+    { path: '/install-check', name: 'Install Check', icon: PlugZap },
     { path: '/tag-manager', name: 'Tag Manager', icon: Tags, pro: 'tag_manager' },
     { path: '/migrate', name: 'Migrate', icon: Import, adminOnly: true },
   ]
@@ -454,6 +457,7 @@ function AppLayout() {
               <Route path="/connections" element={<Connections />} />
               <Route path="/fraud" element={<AdFraud />} />
               <Route path="/explorer" element={<Explorer />} />
+              <Route path="/install-check" element={<InstallCheck />} />
               {/* Settings routes */}
               <Route path="/settings" element={<Navigate to="/settings/properties" replace />} />
               <Route path="/settings/properties" element={<DomainsSettings />} />
