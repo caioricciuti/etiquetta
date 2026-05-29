@@ -34,6 +34,7 @@ import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
 import { Funnels } from './pages/Funnels'
 import { Heatmaps } from './pages/Heatmaps'
 import { InstallCheck } from './pages/InstallCheck'
+import { Live } from './pages/Live'
 import { SharedDashboard } from './pages/SharedDashboard'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
@@ -69,6 +70,7 @@ import {
   GitMerge,
   Flame,
   PlugZap,
+  Radio,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -261,6 +263,7 @@ function AppSidebar() {
 
   const navigation = [
     { path: '/', name: 'Dashboard', icon: BarChart3 },
+    { path: '/live', name: 'Live', icon: Radio },
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
     { path: '/events', name: 'Events', icon: Zap },
     { path: '/funnels', name: 'Funnels', icon: GitMerge, pro: 'funnels' },
@@ -445,6 +448,7 @@ function AppLayout() {
           <div className="max-w-[1800px] mx-auto w-full h-full overflow-hidden">
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/live" element={<Live />} />
               <Route path="/compare" element={<Compare />} />
               <Route path="/events" element={<Events />} />
               <Route path="/errors" element={<Errors />} />
