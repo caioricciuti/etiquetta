@@ -247,12 +247,12 @@ func (h *Handlers) GetRetention(w http.ResponseWriter, r *http.Request) {
 			INNER JOIN first_seen f ON e.visitor_hash = f.visitor_hash
 			WHERE e.domain = ? AND e.is_bot = 0 AND e.timestamp <= ?
 		)
-		SELECT fs.first_day, v.day - fs.first_day AS offset, COUNT(DISTINCT v.visitor_hash)
+		SELECT fs.first_day, v.day - fs.first_day AS day_offset, COUNT(DISTINCT v.visitor_hash)
 		FROM first_seen fs
 		INNER JOIN visits v ON v.visitor_hash = fs.visitor_hash
 		WHERE v.day - fs.first_day BETWEEN 0 AND ?
-		GROUP BY fs.first_day, offset
-		ORDER BY fs.first_day, offset
+		GROUP BY fs.first_day, day_offset
+		ORDER BY fs.first_day, day_offset
 	`, firstSeenWhere)
 
 	queryArgs := append([]interface{}{}, firstSeenArgs...)
