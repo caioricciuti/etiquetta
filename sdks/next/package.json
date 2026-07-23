@@ -2,7 +2,7 @@
   "name": "@etiquetta/next",
   "version": "0.1.0",
   "description": "Next.js integration for Etiquetta analytics",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
