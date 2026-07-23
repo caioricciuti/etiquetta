@@ -15,12 +15,12 @@ import (
 
 // apiKeyResponse is the JSON shape returned when listing API keys.
 type apiKeyResponse struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	KeyPrefix  string  `json:"key_prefix"`
-	CreatedAt  int64   `json:"created_at"`
-	LastUsedAt *int64  `json:"last_used_at"`
-	RevokedAt  *int64  `json:"revoked_at"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	KeyPrefix  string `json:"key_prefix"`
+	CreatedAt  int64  `json:"created_at"`
+	LastUsedAt *int64 `json:"last_used_at"`
+	RevokedAt  *int64 `json:"revoked_at"`
 }
 
 // CreateAPIToken generates a new read-only API key for the current user.
@@ -168,13 +168,13 @@ func (h *Handlers) ValidateAPIKey(key string) (*auth.Claims, error) {
 		return nil, fmt.Errorf("user not found")
 	}
 
-	// Update last_used_at (fire-and-forget)
-	go func() {
-		h.db.Conn().Exec(
-			"UPDATE api_keys SET last_used_at = ? WHERE id = ?",
-			time.Now().UnixMilli(), keyID,
-		)
-	}()
+	// Keep this write inside the authenticating request's lifecycle. A detached
+	// goroutine could otherwise outlive graceful HTTP shutdown and race DuckDB
+	// closure. Failure is non-fatal because last_used_at is audit metadata.
+	_, _ = h.db.Conn().Exec(
+		"UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+		time.Now().UnixMilli(), keyID,
+	)
 
 	return &auth.Claims{
 		UserID: userID,

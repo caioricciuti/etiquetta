@@ -65,12 +65,12 @@ func (h *Handlers) MigrateAnalyze(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[migrate] Analyzed file %s (%d bytes), detected source: %s", header.Filename, header.Size, detection.Source)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"analysis_id":      analysisID,
-		"source":           detection.Source,
-		"columns":          detection.Columns,
-		"sample_rows":      detection.SampleRows,
-		"row_estimate":     detection.RowEstimate,
-		"date_range":       detection.DateRange,
+		"analysis_id":       analysisID,
+		"source":            detection.Source,
+		"columns":           detection.Columns,
+		"sample_rows":       detection.SampleRows,
+		"row_estimate":      detection.RowEstimate,
+		"date_range":        detection.DateRange,
 		"suggested_mapping": detection.SuggestedMapping,
 	})
 }
@@ -134,7 +134,14 @@ func (h *Handlers) MigrateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.migrateManager.RunJob(jobID, filePath)
+	if err := h.migrateManager.RunJob(jobID, filePath); err != nil {
+		errMessage := err.Error()
+		if updateErr := h.migrateManager.Store().UpdateStatus(jobID, "failed", &errMessage); updateErr != nil {
+			log.Printf("[migrate] Failed to mark rejected job %s as failed: %v", jobID, updateErr)
+		}
+		writeError(w, http.StatusServiceUnavailable, "Import service is shutting down")
+		return
+	}
 	h.logAudit(r, "create", "import_job", jobID, "source="+body.Source+" domain="+body.Domain)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})

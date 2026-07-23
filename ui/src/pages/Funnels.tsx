@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useFunnels, useCreateFunnel, useDeleteFunnel, useFunnelMetrics } from '../hooks/useFunnels'
+import { useCustomEventNames } from '../hooks/useGoals'
 import { useDomainStore } from '../stores/useDomainStore'
 import { useDateRangeStore } from '../stores/useDateRangeStore'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -54,6 +55,7 @@ function FunnelVisualization({ steps }: { steps: FunnelStepMetric[] }) {
 function CreateFunnelForm({ onClose }: { onClose: () => void }) {
   const selectedDomainId = useDomainStore(s => s.selectedDomainId)
   const createFunnel = useCreateFunnel()
+  const { data: eventNames } = useCustomEventNames()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [steps, setSteps] = useState<FunnelStep[]>([
@@ -141,6 +143,7 @@ function CreateFunnelForm({ onClose }: { onClose: () => void }) {
                   value={step.event_name ?? ''}
                   onChange={e => updateStep(i, { event_name: e.target.value })}
                   placeholder="signup_click"
+                  list="funnel-custom-events"
                 />
               )}
               <Button variant="ghost" size="icon" onClick={() => removeStep(i)} disabled={steps.length <= 2}>
@@ -151,6 +154,11 @@ function CreateFunnelForm({ onClose }: { onClose: () => void }) {
           <Button variant="outline" size="sm" onClick={addStep}>
             <Plus className="h-4 w-4 mr-1" /> Add step
           </Button>
+          {eventNames && eventNames.length > 0 && (
+            <datalist id="funnel-custom-events">
+              {eventNames.map(e => <option key={e.name} value={e.name}>{`${e.count} events`}</option>)}
+            </datalist>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 pt-4 border-t">

@@ -74,16 +74,10 @@ func (h *Handlers) GetPickResult(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// proxyClient is used by PickProxy to fetch target pages
-var proxyClient = &http.Client{
-	Timeout: 10 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return fmt.Errorf("too many redirects")
-		}
-		return nil
-	},
-}
+// proxyClient is used by all element-picker fetch paths. Its transport pins
+// each hostname to validated public IPs so DNS changes cannot redirect a
+// request into the host's private network.
+var proxyClient = newPickerProxyClient()
 
 var reCSPMeta = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>`)
 var reAbsPath = regexp.MustCompile(`((?:src|href|action)\s*=\s*)(["'])(\/[^"']*)(["'])`)
@@ -148,7 +142,7 @@ func (h *Handlers) PickProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || validatePickerURL(parsed) != nil {
 		writeError(w, http.StatusBadRequest, "Invalid URL")
 		return
 	}
@@ -296,7 +290,6 @@ func (h *Handlers) ServeContainerScript(w http.ResponseWriter, r *http.Request) 
 
 	// Check cache first
 	if cached, ok := containerCache.Load(siteID); ok {
-		log.Printf("[tm] ServeContainerScript: serving cached JS for siteId=%s", siteID)
 		w.Header().Set("Content-Type", "application/javascript")
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		w.Write(cached.([]byte))
@@ -413,14 +406,21 @@ func (h *Handlers) PreviewToken(w http.ResponseWriter, r *http.Request) {
 
 // ListContainers returns all tag manager containers with domain info
 func (h *Handlers) ListContainers(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Conn().Query(`
+	query := `
 		SELECT c.id, c.domain_id, c.name, c.published_version, c.draft_version,
 		       c.published_at, c.published_by, c.created_at, c.updated_at,
 		       d.name as domain_name, d.domain, d.site_id
 		FROM tm_containers c
 		JOIN domains d ON d.id = c.domain_id
-		ORDER BY c.created_at DESC
-	`)
+	`
+	var args []any
+	if domainIDs, restricted := restrictedDomainIDs(r); restricted {
+		query += " WHERE c.domain_id IN (" + sqlPlaceholders(len(domainIDs)) + ")"
+		args = stringsToAny(domainIDs)
+	}
+	query += " ORDER BY c.created_at DESC"
+
+	rows, err := h.db.Conn().Query(query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Query failed")
 		return
@@ -430,12 +430,12 @@ func (h *Handlers) ListContainers(w http.ResponseWriter, r *http.Request) {
 	var containers []map[string]interface{}
 	for rows.Next() {
 		var (
-			id, domainID, name                string
-			publishedVersion, draftVersion    int
-			publishedAt                       *int64
-			publishedBy                       *string
-			createdAt, updatedAt              int64
-			domainName, domain, siteID        string
+			id, domainID, name             string
+			publishedVersion, draftVersion int
+			publishedAt                    *int64
+			publishedBy                    *string
+			createdAt, updatedAt           int64
+			domainName, domain, siteID     string
 		)
 		if err := rows.Scan(&id, &domainID, &name, &publishedVersion, &draftVersion,
 			&publishedAt, &publishedBy, &createdAt, &updatedAt,
@@ -508,12 +508,12 @@ func (h *Handlers) GetContainer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	var (
-		domainID, name                    string
-		publishedVersion, draftVersion    int
-		publishedAt                       *int64
-		publishedBy                       *string
-		createdAt, updatedAt              int64
-		domainName, domain, siteID        string
+		domainID, name                 string
+		publishedVersion, draftVersion int
+		publishedAt                    *int64
+		publishedBy                    *string
+		createdAt, updatedAt           int64
+		domainName, domain, siteID     string
 	)
 
 	err := h.db.Conn().QueryRow(`
@@ -695,10 +695,10 @@ func (h *Handlers) GetContainerVersions(w http.ResponseWriter, r *http.Request) 
 	var versions []map[string]interface{}
 	for rows.Next() {
 		var (
-			id, cID   string
-			version   int
-			pubBy     *string
-			pubAt     int64
+			id, cID string
+			version int
+			pubBy   *string
+			pubAt   int64
 		)
 		if err := rows.Scan(&id, &cID, &version, &pubBy, &pubAt); err != nil {
 			continue
@@ -1102,6 +1102,7 @@ func (h *Handlers) CreateTag(w http.ResponseWriter, r *http.Request) {
 
 // GetTag returns a single tag by ID
 func (h *Handlers) GetTag(w http.ResponseWriter, r *http.Request) {
+	containerID := chi.URLParam(r, "cid")
 	tagID := chi.URLParam(r, "id")
 
 	var (
@@ -1112,8 +1113,8 @@ func (h *Handlers) GetTag(w http.ResponseWriter, r *http.Request) {
 	)
 	err := h.db.Conn().QueryRow(`
 		SELECT id, container_id, name, tag_type, config, consent_category, priority, is_enabled, version, created_at, updated_at
-		FROM tm_tags WHERE id = ?
-	`, tagID).Scan(&id, &cID, &name, &tagType, &config, &consentCat, &priority, &isEnabled, &version, &createdAt, &updatedAt)
+		FROM tm_tags WHERE id = ? AND container_id = ?
+	`, tagID, containerID).Scan(&id, &cID, &name, &tagType, &config, &consentCat, &priority, &isEnabled, &version, &createdAt, &updatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Tag not found")
 		return
@@ -1706,7 +1707,13 @@ var C=%s;
 var _cl=[];
 %swindow.etiquettaDataLayer=window.etiquettaDataLayer||[];
 var consent=window.__ETIQUETTA_CONSENT__||null;
-function hasConsent(cat){return !consent||(consent[cat]===true);}
+function hasConsent(cat){
+var status=window.__ETIQUETTA_CONSENT_STATUS__;
+if(cat==="necessary")return true;
+if(status==="loading"||status==="error"||status==="configured")return !!consent&&consent[cat]===true;
+if(consent&&typeof consent[cat]==="boolean")return consent[cat]===true;
+return status==="unconfigured";
+}
 function resolveVar(v){
 switch(v.variable_type){
 case"data_layer":var dl=window.etiquettaDataLayer;var k=v.config.variable_name||"";for(var i=dl.length-1;i>=0;i--){if(dl[i]&&dl[i][k]!==undefined)return dl[i][k];}return v.config.default_value||"";
@@ -1832,8 +1839,21 @@ if(t==="element_visibility"&&cfg.selector){var threshold=parseInt(cfg.threshold,
 });
 });
 }
-window.addEventListener("etiquetta:consent",function(){consent=window.__ETIQUETTA_CONSENT__;init();});
-if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{init();}
+var _lastConsentState=null;
+var _containerDOMReady=document.readyState!=="loading";
+function initForConsentState(){
+consent=window.__ETIQUETTA_CONSENT__||null;
+if(!_containerDOMReady)return;
+var status=window.__ETIQUETTA_CONSENT_STATUS__||"";
+var state=status+"|"+JSON.stringify(consent);
+if(state===_lastConsentState)return;
+_lastConsentState=state;
+if(status==="loading")return;
+init();
+}
+window.addEventListener("etiquetta:consent",initForConsentState);
+window.addEventListener("etiquetta:consent-ready",initForConsentState);
+if(!_containerDOMReady){document.addEventListener("DOMContentLoaded",function(){_containerDOMReady=true;initForConsentState();});}else{initForConsentState();}
 %s})();`,
 		debugPrefix,
 		snapshotJSON,

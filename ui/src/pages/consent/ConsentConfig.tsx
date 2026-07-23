@@ -72,6 +72,8 @@ function ConsentConfigContent() {
   }
 
   function handleRemoveCategory(id: string) {
+    // The tracker keys off the "analytics" category id — never remove it
+    if (id === 'analytics') return
     setCategories(categories.filter(c => c.id !== id))
   }
 
@@ -123,7 +125,7 @@ function ConsentConfigContent() {
             <div>
               <p className="font-medium">Consent Banner</p>
               <p className="text-sm text-muted-foreground">
-                Enable to show cookie consent banner on your site. Only needed if you use third-party scripts.
+                Enable an opt-in banner when your policy or legal basis requires consent before analytics or third-party tags run.
               </p>
             </div>
             <Switch
@@ -152,6 +154,9 @@ function ConsentConfigContent() {
                   {category.required && (
                     <span className="text-xs bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded">Required</span>
                   )}
+                  {!category.required && category.id === 'analytics' && (
+                    <span className="text-xs bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded">Protected</span>
+                  )}
                 </div>
                 <p className="text-sm text-muted-foreground mt-1">{category.description}</p>
               </div>
@@ -168,9 +173,11 @@ function ConsentConfigContent() {
                         onCheckedChange={() => handleToggleCategoryDefault(category.id)}
                       />
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => handleRemoveCategory(category.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {category.id !== 'analytics' && (
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveCategory(category.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </>
                 )}
               </div>

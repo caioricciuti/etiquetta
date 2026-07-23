@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -249,22 +250,28 @@ func (h *Handlers) ExportEvents(w http.ResponseWriter, r *http.Request) {
 	// Get date range from query params
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
+	domain := r.URL.Query().Get("domain")
 
 	query := "SELECT * FROM events"
 	var args []interface{}
+	var conditions []string
 
-	if from != "" || to != "" {
-		query += " WHERE 1=1"
-		if from != "" {
-			fromTime, _ := time.Parse(time.RFC3339, from)
-			query += " AND timestamp >= ?"
-			args = append(args, fromTime.UnixMilli())
-		}
-		if to != "" {
-			toTime, _ := time.Parse(time.RFC3339, to)
-			query += " AND timestamp <= ?"
-			args = append(args, toTime.UnixMilli())
-		}
+	if from != "" {
+		fromTime, _ := time.Parse(time.RFC3339, from)
+		conditions = append(conditions, "timestamp >= ?")
+		args = append(args, fromTime.UnixMilli())
+	}
+	if to != "" {
+		toTime, _ := time.Parse(time.RFC3339, to)
+		conditions = append(conditions, "timestamp <= ?")
+		args = append(args, toTime.UnixMilli())
+	}
+	if domain != "" {
+		conditions = append(conditions, "domain = ?")
+		args = append(args, domain)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	query += " ORDER BY timestamp DESC LIMIT 100000"

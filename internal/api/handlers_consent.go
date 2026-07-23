@@ -2,20 +2,39 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 )
 
+const maxConsentRecordBody = 16 << 10
+
+type publicConsentRecordRequest struct {
+	VisitorHash   string          `json:"visitor_hash"`
+	Categories    json.RawMessage `json:"categories"`
+	ConfigVersion int             `json:"config_version"`
+	Action        string          `json:"action"`
+}
+
+type publicConsentCategory struct {
+	ID       string `json:"id"`
+	Required bool   `json:"required"`
+}
+
 // ServeConsentScript serves the embedded consent banner JavaScript
 func (h *Handlers) ServeConsentScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
 
 	script, err := consentJS.ReadFile("consent.js")
 	if err != nil {
@@ -28,29 +47,31 @@ func (h *Handlers) ServeConsentScript(w http.ResponseWriter, r *http.Request) {
 
 // GetPublicConsentConfig returns the active consent config for a site (public, no auth)
 func (h *Handlers) GetPublicConsentConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+
 	siteID := chi.URLParam(r, "siteId")
 	if siteID == "" {
 		writeError(w, http.StatusBadRequest, "Missing site ID")
 		return
 	}
 
-	log.Printf("[consent] GetPublicConsentConfig: siteId=%s", siteID)
-
 	// Look up domain by site_id
 	var domainID string
 	err := h.db.Conn().QueryRow("SELECT id FROM domains WHERE site_id = ? AND is_active = 1", siteID).Scan(&domainID)
 	if err != nil {
 		log.Printf("[consent] GetPublicConsentConfig: domain lookup failed for siteId=%s: %v", siteID, err)
-		w.WriteHeader(http.StatusNoContent)
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "Consent configuration unavailable")
+		}
 		return
 	}
-	log.Printf("[consent] GetPublicConsentConfig: found domainId=%s", domainID)
-
 	// Find active consent config for this domain
 	// Scan JSON columns into strings first
 	var (
 		id, domID                                          string
-		version, cookieExpiry                               int
+		version, cookieExpiry                              int
 		categories, appearance, translations, geoTargeting string
 		cookieName                                         string
 		autoLanguage                                       int
@@ -71,11 +92,13 @@ func (h *Handlers) GetPublicConsentConfig(w http.ResponseWriter, r *http.Request
 	)
 	if err != nil {
 		log.Printf("[consent] GetPublicConsentConfig: config query failed for domainId=%s: %v", domainID, err)
-		w.WriteHeader(http.StatusNoContent)
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "Consent configuration unavailable")
+		}
 		return
 	}
-
-	log.Printf("[consent] GetPublicConsentConfig: found config id=%s version=%d", id, version)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":                 id,
@@ -107,15 +130,62 @@ func (h *Handlers) RecordConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		VisitorHash   string          `json:"visitor_hash"`
-		Categories    json.RawMessage `json:"categories"`
-		ConfigVersion int             `json:"config_version"`
-		Action        string          `json:"action"`
+	r.Body = http.MaxBytesReader(w, r.Body, maxConsentRecordBody)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var req publicConsentRecordRequest
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "Invalid JSON")
+		return
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON")
+	req.VisitorHash = strings.TrimSpace(req.VisitorHash)
+	if req.VisitorHash == "" || len(req.VisitorHash) > 128 {
+		writeError(w, http.StatusBadRequest, "Invalid visitor hash")
+		return
+	}
+
+	switch req.Action {
+	case "show", "accept_all", "reject_all", "custom":
+	default:
+		writeError(w, http.StatusBadRequest, "Invalid consent action")
+		return
+	}
+
+	var activeVersion int
+	var configuredCategoriesJSON string
+	if err := h.db.Conn().QueryRow(`
+		SELECT version, categories
+		FROM consent_configs
+		WHERE domain_id = ? AND is_active = 1
+		ORDER BY version DESC
+		LIMIT 1
+	`, domainID).Scan(&activeVersion, &configuredCategoriesJSON); err != nil {
+		writeError(w, http.StatusNotFound, "Consent configuration not active")
+		return
+	}
+	if req.ConfigVersion != activeVersion {
+		writeError(w, http.StatusConflict, "Consent configuration changed")
+		return
+	}
+
+	var configuredCategories []publicConsentCategory
+	if err := json.Unmarshal([]byte(configuredCategoriesJSON), &configuredCategories); err != nil {
+		writeError(w, http.StatusInternalServerError, "Invalid consent configuration")
+		return
+	}
+
+	var decisions map[string]bool
+	if len(req.Categories) == 0 || json.Unmarshal(req.Categories, &decisions) != nil || decisions == nil {
+		writeError(w, http.StatusBadRequest, "Invalid consent categories")
+		return
+	}
+	if err := validatePublicConsentDecision(req.Action, configuredCategories, decisions); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -130,15 +200,16 @@ func (h *Handlers) RecordConsent(w http.ResponseWriter, r *http.Request) {
 
 	// Get user agent and geo country
 	userAgent := r.Header.Get("User-Agent")
+	if len(userAgent) > 1024 {
+		userAgent = userAgent[:1024]
+	}
 	enriched := h.enricher.Enrich(clientIP, userAgent, "")
 	geoCountry := enriched.GeoCountry
 
-	// For 'show' events, categories are optional (empty object)
-	var categoriesJSON []byte
-	if req.Categories != nil {
-		categoriesJSON, _ = json.Marshal(req.Categories)
-	} else {
-		categoriesJSON = []byte("{}")
+	categoriesJSON, err := json.Marshal(decisions)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid consent categories")
+		return
 	}
 
 	now := time.Now().UnixMilli()
@@ -156,6 +227,55 @@ func (h *Handlers) RecordConsent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func validatePublicConsentDecision(action string, configured []publicConsentCategory, decisions map[string]bool) error {
+	expected := make(map[string]bool, len(configured))
+	for _, category := range configured {
+		if category.ID == "" {
+			return fmt.Errorf("invalid consent configuration")
+		}
+		if _, exists := expected[category.ID]; exists {
+			return fmt.Errorf("invalid consent configuration")
+		}
+		expected[category.ID] = category.Required
+	}
+
+	if action == "show" {
+		if len(decisions) != 0 {
+			return fmt.Errorf("show action must not contain decisions")
+		}
+		return nil
+	}
+
+	if len(decisions) != len(expected) {
+		return fmt.Errorf("consent categories do not match configuration")
+	}
+	for id, required := range expected {
+		decision, ok := decisions[id]
+		if !ok {
+			return fmt.Errorf("consent categories do not match configuration")
+		}
+		if required && !decision {
+			return fmt.Errorf("required consent category cannot be disabled")
+		}
+		switch action {
+		case "accept_all":
+			if !decision {
+				return fmt.Errorf("accept_all must enable every category")
+			}
+		case "reject_all":
+			if decision != required {
+				return fmt.Errorf("reject_all must disable optional categories")
+			}
+		}
+	}
+	for id := range decisions {
+		if _, ok := expected[id]; !ok {
+			return fmt.Errorf("consent categories do not match configuration")
+		}
+	}
+	return nil
+}
+
 // GetConsentConfig returns the active consent config for a domain (auth required)
 func (h *Handlers) GetConsentConfig(w http.ResponseWriter, r *http.Request) {
 	domainID := chi.URLParam(r, "domainId")
@@ -164,7 +284,7 @@ func (h *Handlers) GetConsentConfig(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		id, domID                                          string
-		version, cookieExpiry                               int
+		version, cookieExpiry                              int
 		isActive, autoLanguage                             int
 		categories, appearance, translations, geoTargeting string
 		cookieName                                         string
@@ -287,19 +407,19 @@ func (h *Handlers) SaveConsentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":                id,
-		"domain_id":         domainID,
-		"version":           newVersion,
-		"is_active":         true,
-		"categories":        req.Categories,
-		"appearance":        req.Appearance,
-		"translations":      req.Translations,
-		"cookie_name":       req.CookieName,
+		"id":                 id,
+		"domain_id":          domainID,
+		"version":            newVersion,
+		"is_active":          true,
+		"categories":         req.Categories,
+		"appearance":         req.Appearance,
+		"translations":       req.Translations,
+		"cookie_name":        req.CookieName,
 		"cookie_expiry_days": req.CookieExpiryDays,
-		"auto_language":     req.AutoLanguage,
-		"geo_targeting":     req.GeoTargeting,
-		"created_at":        now,
-		"updated_at":        now,
+		"auto_language":      req.AutoLanguage,
+		"geo_targeting":      req.GeoTargeting,
+		"created_at":         now,
+		"updated_at":         now,
 	})
 }
 
@@ -323,11 +443,11 @@ func (h *Handlers) GetConsentConfigHistory(w http.ResponseWriter, r *http.Reques
 	var configs []map[string]interface{}
 	for rows.Next() {
 		var (
-			id, domID, cookieName                          string
+			id, domID, cookieName                           string
 			categories, appearance, translations, geoTarget string
 			version, cookieExpiry                           int
-			isActive, autoLang                             bool
-			createdAt, updatedAt                           int64
+			isActive, autoLang                              bool
+			createdAt, updatedAt                            int64
 		)
 		if err := rows.Scan(&id, &domID, &version, &isActive, &categories, &appearance, &translations,
 			&cookieName, &cookieExpiry, &autoLang, &geoTarget, &createdAt, &updatedAt); err != nil {
@@ -598,7 +718,7 @@ func (h *Handlers) ToggleConsentBanner(w http.ResponseWriter, r *http.Request) {
 	// Return updated config
 	var (
 		id, domID                                          string
-		version, cookieExpiry                               int
+		version, cookieExpiry                              int
 		isActive, autoLanguage                             int
 		categories, appearance, translations, geoTargeting string
 		cookieName                                         string
@@ -645,4 +765,3 @@ func hashIPWithSalt(ip, salt string) string {
 	h.Write([]byte(ip + salt))
 	return hex.EncodeToString(h.Sum(nil))
 }
-
