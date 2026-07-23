@@ -89,6 +89,7 @@ help:
 	@echo ""
 	@echo "CLI Commands:"
 	@echo "  etiquetta serve     - Start the server"
+	@echo "  etiquetta backup    - Create a checksummed offline backup"
 	@echo "  etiquetta init      - Interactive setup wizard"
 	@echo "  etiquetta version   - Show version info"
 	@echo "  etiquetta user list - List users"

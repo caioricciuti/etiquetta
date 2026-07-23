@@ -10,6 +10,34 @@ INSTALL_DIR="${ETIQUETTA_INSTALL_DIR:-/usr/local/bin}"
 DATA_DIR="${ETIQUETTA_DATA_DIR:-/var/lib/etiquetta}"
 WITH_SYSTEMD="${ETIQUETTA_SYSTEMD:-false}"
 GITHUB_REPO="caioricciuti/etiquetta"
+TMP_FILE=""
+CHECKSUM_FILE=""
+INSTALL_TMP=""
+PREVIOUS_TMP=""
+
+cleanup() {
+  if [ -n "$TMP_FILE" ]; then
+    rm -f "$TMP_FILE"
+  fi
+  if [ -n "$CHECKSUM_FILE" ]; then
+    rm -f "$CHECKSUM_FILE"
+  fi
+  if [ -n "$INSTALL_TMP" ] && [ -e "$INSTALL_TMP" ]; then
+    if [ -w "$INSTALL_TMP" ]; then
+      rm -f "$INSTALL_TMP"
+    else
+      sudo rm -f "$INSTALL_TMP"
+    fi
+  fi
+  if [ -n "$PREVIOUS_TMP" ] && [ -e "$PREVIOUS_TMP" ]; then
+    if [ -w "$PREVIOUS_TMP" ]; then
+      rm -f "$PREVIOUS_TMP"
+    else
+      sudo rm -f "$PREVIOUS_TMP"
+    fi
+  fi
+}
+trap cleanup EXIT
 
 # Colors
 RED='\033[0;31m'
@@ -76,29 +104,78 @@ get_latest_version() {
 download_binary() {
   BINARY_NAME="etiquetta-${PLATFORM}"
   DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${BINARY_NAME}"
+  CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/checksums.txt"
 
   step "Downloading $BINARY_NAME..."
   TMP_FILE=$(mktemp)
+  CHECKSUM_FILE=$(mktemp)
 
   if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
-    rm -f "$TMP_FILE"
     error "Failed to download binary. Check if version $VERSION exists for $PLATFORM"
   fi
 
+  if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE"; then
+    error "Release $VERSION has no checksums.txt; refusing an unverified installation"
+  fi
+
+  EXPECTED_CHECKSUM=$(awk -v name="$BINARY_NAME" '$2 == name || $2 == ("*" name) { print $1; exit }' "$CHECKSUM_FILE")
+  [ -z "$EXPECTED_CHECKSUM" ] && error "No checksum published for $BINARY_NAME"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_CHECKSUM=$(sha256sum "$TMP_FILE" | awk '{ print $1 }')
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_CHECKSUM=$(shasum -a 256 "$TMP_FILE" | awk '{ print $1 }')
+  else
+    error "A SHA-256 tool (sha256sum or shasum) is required"
+  fi
+
+  if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
+    error "Checksum verification failed for $BINARY_NAME"
+  fi
+
   chmod +x "$TMP_FILE"
-  info "Downloaded successfully"
+  info "Downloaded and verified successfully"
 }
 
 install_binary() {
   step "Installing to $INSTALL_DIR/etiquetta..."
 
   if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP_FILE" "$INSTALL_DIR/etiquetta"
+    INSTALL_TMP=$(mktemp "$INSTALL_DIR/.etiquetta-install.XXXXXX")
+    cp "$TMP_FILE" "$INSTALL_TMP"
+    chmod 0755 "$INSTALL_TMP"
+
+    if [ -f "$INSTALL_DIR/etiquetta" ]; then
+      PREVIOUS_TMP=$(mktemp "$INSTALL_DIR/.etiquetta-previous.XXXXXX")
+      cp -p "$INSTALL_DIR/etiquetta" "$PREVIOUS_TMP"
+      mv -f "$PREVIOUS_TMP" "$INSTALL_DIR/etiquetta.previous"
+      PREVIOUS_TMP=""
+    fi
+
+    mv -f "$INSTALL_TMP" "$INSTALL_DIR/etiquetta"
   else
-    sudo mv "$TMP_FILE" "$INSTALL_DIR/etiquetta"
+    INSTALL_TMP=$(sudo mktemp "$INSTALL_DIR/.etiquetta-install.XXXXXX")
+    sudo cp "$TMP_FILE" "$INSTALL_TMP"
+    sudo chmod 0755 "$INSTALL_TMP"
+
+    if sudo test -f "$INSTALL_DIR/etiquetta"; then
+      PREVIOUS_TMP=$(sudo mktemp "$INSTALL_DIR/.etiquetta-previous.XXXXXX")
+      sudo cp -p "$INSTALL_DIR/etiquetta" "$PREVIOUS_TMP"
+      sudo mv -f "$PREVIOUS_TMP" "$INSTALL_DIR/etiquetta.previous"
+      PREVIOUS_TMP=""
+    fi
+
+    sudo mv -f "$INSTALL_TMP" "$INSTALL_DIR/etiquetta"
   fi
 
+  INSTALL_TMP=""
+  rm -f "$TMP_FILE"
+  TMP_FILE=""
+
   info "Binary installed: $INSTALL_DIR/etiquetta"
+  if [ -f "$INSTALL_DIR/etiquetta.previous" ]; then
+    info "Previous binary preserved: $INSTALL_DIR/etiquetta.previous"
+  fi
 }
 
 setup_systemd() {
@@ -116,6 +193,7 @@ setup_systemd() {
   # Create data directory
   sudo mkdir -p "$DATA_DIR"
   sudo chown etiquetta:etiquetta "$DATA_DIR"
+  sudo chmod 0700 "$DATA_DIR"
   info "Created data directory: $DATA_DIR"
 
   # Create systemd service
@@ -132,6 +210,8 @@ WorkingDirectory=$DATA_DIR
 ExecStart=$INSTALL_DIR/etiquetta serve
 Restart=always
 RestartSec=5
+TimeoutStopSec=120
+UMask=0077
 
 # Environment (read by binary via env var fallbacks)
 Environment=ETIQUETTA_DATA_DIR=$DATA_DIR

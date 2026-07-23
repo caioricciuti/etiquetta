@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -12,11 +13,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/caioricciuti/etiquetta/internal/alerts"
 	"github.com/caioricciuti/etiquetta/internal/api"
 	"github.com/caioricciuti/etiquetta/internal/bot"
 	"github.com/caioricciuti/etiquetta/internal/buffer"
@@ -38,7 +41,7 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the Etiquetta server",
 	Long:  `Starts the Etiquetta analytics server and begins accepting tracking data.`,
-	Run:   runServe,
+	RunE:  runServe,
 }
 
 var stopCmd = &cobra.Command{
@@ -102,7 +105,7 @@ func runStop(cmd *cobra.Command, args []string) {
 	fmt.Printf("  kill -9 %d\n", pid)
 }
 
-func runServe(cmd *cobra.Command, args []string) {
+func runServe(cmd *cobra.Command, args []string) error {
 	// Handle detach mode - fork to background
 	if detach {
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -141,7 +144,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		fmt.Printf("Etiquetta started in background (PID: %d)\n", child.Process.Pid)
 		fmt.Printf("Log file: %s\n", logPath)
 		fmt.Printf("PID file: %s\n", pidPath)
-		return
+		return nil
 	}
 
 	// Ensure data directory exists
@@ -268,7 +271,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Initialize connections store and sync manager
 	connStore := connections.NewStore(db, secretKey)
 	syncManager := connections.NewSyncManager(connStore, 1*time.Hour)
-	go syncManager.Start()
+	syncManager.Start()
 
 	// Initialize replay store
 	replayStore := replay.NewStore(dataDir)
@@ -280,29 +283,52 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create router
-	router := api.NewRouter(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager, migrateManager, replayStore)
+	router, releaseStreams := api.NewRouterWithShutdown(db, enricher, licenseManager, cfg, uiDist, bufferMgr, connStore, syncManager, migrateManager, replayStore)
 
 	// Shared mutex: compaction takes exclusive lock, all other writers to
 	// compacted tables (events, performance, errors, visitor_sessions) take read lock.
 	dbMu := bufferMgr.DBMu()
 
-	// Start data retention cleanup goroutine
+	// Start data retention cleanup goroutine.
+	retentionCtx, retentionCancel := context.WithCancel(context.Background())
+	var retentionWG sync.WaitGroup
+	retentionWG.Add(1)
 	go func() {
+		defer retentionWG.Done()
 		dbMu.RLock()
 		runDataRetention(db, licenseManager, settingsSvc, replayStore)
 		dbMu.RUnlock()
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			dbMu.RLock()
-			runDataRetention(db, licenseManager, settingsSvc, replayStore)
-			dbMu.RUnlock()
+		for {
+			select {
+			case <-ticker.C:
+				dbMu.RLock()
+				runDataRetention(db, licenseManager, settingsSvc, replayStore)
+				dbMu.RUnlock()
+			case <-retentionCtx.Done():
+				return
+			}
 		}
 	}()
 
 	// Start bot batch analysis (every 15 minutes)
 	batchAnalyzer := bot.NewBatchAnalyzer(db.Conn(), 15*time.Minute, dbMu)
-	go batchAnalyzer.Start()
+	var batchWG sync.WaitGroup
+	batchWG.Add(1)
+	go func() {
+		defer batchWG.Done()
+		batchAnalyzer.Start()
+	}()
+
+	// Start alert evaluator (every 5 minutes)
+	alertCtx, alertCancel := context.WithCancel(context.Background())
+	var alertWG sync.WaitGroup
+	alertWG.Add(1)
+	go func() {
+		defer alertWG.Done()
+		alerts.NewEvaluator(db.Conn(), settingsSvc, dbMu).Start(alertCtx)
+	}()
 
 	// Start server
 	server := &http.Server{
@@ -313,42 +339,84 @@ func runServe(cmd *cobra.Command, args []string) {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		log.Println("Shutting down server...")
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer shutdownCancel()
-
-		// Stop accepting new requests
-		server.Shutdown(shutdownCtx)
-
-		// Stop background jobs
-		migrateManager.Shutdown()
-		batchAnalyzer.Stop()
-		syncManager.Stop()
-		compactCancel()
-
-		// Flush all buffered data to DuckDB
-		log.Println("Flushing buffers...")
-		bufferMgr.Close(shutdownCtx)
-
-		// Close database
-		db.Close()
-	}()
-
 	log.Printf("Etiquetta %s starting on %s", Version, cfg.ListenAddr)
 	log.Printf("Data directory: %s", cfg.DataDir)
 	log.Printf("Database: DuckDB at %s", duckdbPath)
 	log.Printf("License: %s", licenseManager.GetTier())
 
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- server.ListenAndServe()
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	var serverErr error
+	var shutdownErr error
+	serverExited := false
+	select {
+	case sig := <-sigChan:
+		log.Printf("Received %s, shutting down server...", sig)
+	case serverErr = <-serverErrCh:
+		serverExited = true
 	}
+	signal.Stop(sigChan)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	// Release long-lived SSE streams so Shutdown drains on in-flight requests
+	// rather than blocking the full timeout on open dashboards.
+	releaseStreams()
+
+	// Stop accepting requests and wait for active handlers before stopping any
+	// component that can receive their buffered writes.
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP graceful shutdown failed: %v", err)
+		shutdownErr = errors.Join(shutdownErr, fmt.Errorf("HTTP graceful shutdown: %w", err))
+		if closeErr := server.Close(); closeErr != nil {
+			log.Printf("HTTP forced close failed: %v", closeErr)
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("HTTP forced close: %w", closeErr))
+		}
+	}
+
+	// Cancel every background database user, then wait for the goroutines whose
+	// lifecycle is owned here before draining buffers or closing DuckDB.
+	alertCancel()
+	retentionCancel()
+	batchAnalyzer.Stop()
+	compactCancel()
+	syncManager.Stop()
+	if err := migrateManager.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Import shutdown exceeded graceful deadline: %v", err)
+		shutdownErr = errors.Join(shutdownErr, err)
+		// Never close the buffer or database underneath an import goroutine.
+		// Continue joining after the graceful deadline; the service manager may
+		// still enforce its own outer process timeout.
+		if joinErr := migrateManager.Shutdown(context.Background()); joinErr != nil {
+			shutdownErr = errors.Join(shutdownErr, joinErr)
+		}
+	}
+
+	alertWG.Wait()
+	retentionWG.Wait()
+	batchWG.Wait()
+	compactor.Wait()
+
+	log.Println("Flushing buffers...")
+	if err := bufferMgr.Close(shutdownCtx); err != nil {
+		log.Printf("Buffer shutdown warning: %v", err)
+		shutdownErr = errors.Join(shutdownErr, err)
+	}
+
+	if !serverExited {
+		serverErr = <-serverErrCh
+	}
+	if serverErr != nil && !errors.Is(serverErr, http.ErrServerClosed) {
+		shutdownErr = errors.Join(shutdownErr, fmt.Errorf("server stopped unexpectedly: %w", serverErr))
+	}
+	return shutdownErr
 }
 
 func runDataRetention(db *database.DB, lm *licensing.Manager, settingsSvc *settings.Service, replayStore *replay.Store) {

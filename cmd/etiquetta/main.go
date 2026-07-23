@@ -38,10 +38,12 @@ Get started:
   etiquetta serve    # Start the server
 
 Documentation: https://github.com/caioricciuti/etiquetta`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// Default behavior: run serve command
-		serveCmd.Run(cmd, args)
-	},
+	// Default behavior: run the server while preserving command errors.
+	RunE: runServe,
+	// A runtime error (e.g. a shutdown warning) is not a usage error — don't
+	// dump the help text, and let main() print the error once itself.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
@@ -60,6 +62,7 @@ func init() {
 	rootCmd.AddCommand(geoipCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(backupCmd)
 }
 
 // getEnvOr returns the env var value or a fallback
