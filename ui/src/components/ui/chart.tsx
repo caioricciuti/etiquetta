@@ -104,6 +104,18 @@ ${colorConfig
 
 const ChartTooltip = RechartsPrimitive.Tooltip
 
+// Recharts 3 no longer surfaces payload/label/verticalAlign on the public
+// Tooltip/Legend prop types (they are injected at render time), so type the
+// shapes this component actually reads directly instead of deriving them.
+type ChartPayloadItem = {
+  type?: string
+  name?: string
+  dataKey?: string | number
+  value?: number | string
+  color?: string
+  payload?: Record<string, unknown> & { fill?: string }
+}
+
 function ChartTooltipContent({
   active,
   payload,
@@ -118,14 +130,29 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
-}: React.ComponentProps<typeof RechartsPrimitive.Tooltip> &
-  React.ComponentProps<"div"> & {
-    hideLabel?: boolean
-    hideIndicator?: boolean
-    indicator?: "line" | "dot" | "dashed"
-    nameKey?: string
-    labelKey?: string
-  }) {
+}: React.ComponentProps<"div"> & {
+  active?: boolean
+  payload?: ChartPayloadItem[]
+  label?: React.ReactNode
+  labelFormatter?: (
+    label: React.ReactNode,
+    payload: ChartPayloadItem[]
+  ) => React.ReactNode
+  formatter?: (
+    value: number | string,
+    name: string,
+    item: ChartPayloadItem,
+    index: number,
+    payload: Record<string, unknown> | undefined
+  ) => React.ReactNode
+  color?: string
+  labelClassName?: string
+  hideLabel?: boolean
+  hideIndicator?: boolean
+  indicator?: "line" | "dot" | "dashed"
+  nameKey?: string
+  labelKey?: string
+}) {
   const { config } = useChart()
 
   const tooltipLabel = React.useMemo(() => {
@@ -184,7 +211,7 @@ function ChartTooltipContent({
           .map((item, index) => {
             const key = `${nameKey || item.name || item.dataKey || "value"}`
             const itemConfig = getPayloadConfigFromPayload(config, item, key)
-            const indicatorColor = color || item.payload.fill || item.color
+            const indicatorColor = color || item.payload?.fill || item.color
 
             return (
               <div
@@ -258,11 +285,12 @@ function ChartLegendContent({
   payload,
   verticalAlign = "bottom",
   nameKey,
-}: React.ComponentProps<"div"> &
-  Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
-    hideIcon?: boolean
-    nameKey?: string
-  }) {
+}: React.ComponentProps<"div"> & {
+  payload?: ChartPayloadItem[]
+  verticalAlign?: "top" | "bottom"
+  hideIcon?: boolean
+  nameKey?: string
+}) {
   const { config } = useChart()
 
   if (!payload?.length) {
