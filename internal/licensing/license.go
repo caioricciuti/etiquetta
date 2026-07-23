@@ -26,6 +26,7 @@ const (
 	FeatureConnections    = "connections"
 	FeatureSessionReplay = "session_replay"
 	FeatureFunnels       = "funnels"
+	FeatureAlerts        = "alerts"
 )
 
 // License represents a validated license
@@ -99,6 +100,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureConnections:    true,
 			FeatureSessionReplay: true,
 			FeatureFunnels:       true,
+			FeatureAlerts:        true,
 		}
 	case TierPro:
 		return map[string]bool{
@@ -107,7 +109,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureCustomEvents:  true,
 			FeatureExport:        true,
 			FeatureAPI:           true,
-			FeatureSSO:           false,
+			FeatureSSO:           true,
 			FeatureMultiUser:     true,
 			FeatureWhiteLabel:    false,
 			FeatureAdFraud:       true,
@@ -117,6 +119,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureConnections:    true,
 			FeatureSessionReplay: true,
 			FeatureFunnels:       true,
+			FeatureAlerts:        true,
 		}
 	default: // community
 		return map[string]bool{
@@ -135,6 +138,7 @@ func DefaultFeatures(tier string) map[string]bool {
 			FeatureConnections:    true, // Available in community (limited to 1)
 			FeatureSessionReplay: false,
 			FeatureFunnels:       false,
+			FeatureAlerts:        false,
 		}
 	}
 }

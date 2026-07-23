@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { fetchAPI } from '../lib/api'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -30,6 +31,7 @@ export function Login() {
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [ssoProviders, setSsoProviders] = useState<Array<{ id: string; name: string }>>([])
   const { login, refresh } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -39,6 +41,12 @@ export function Login() {
       setMode('onboarding')
     }
   }, [searchParams])
+
+  useEffect(() => {
+    fetchAPI<Array<{ id: string; name: string }>>('/api/auth/sso')
+      .then(providers => setSsoProviders(providers ?? []))
+      .catch(() => {})
+  }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -184,6 +192,34 @@ export function Login() {
                     Sign in
                   </Button>
                 </form>
+
+                {ssoProviders.length > 0 && (
+                  <div className="mt-6 space-y-3">
+                    <div className="relative">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t border-border" />
+                      </div>
+                      <div className="relative flex justify-center text-xs uppercase">
+                        <span className="bg-background px-2 text-muted-foreground">Or continue with</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {ssoProviders.map(p => (
+                        <Button
+                          key={p.id}
+                          variant="outline"
+                          className="w-full h-11"
+                          onClick={() => {
+                            window.location.href = `/api/auth/sso/${p.id}/login`
+                          }}
+                        >
+                          <Shield className="h-4 w-4 mr-2" />
+                          Continue with {p.name}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
@@ -332,7 +368,7 @@ export function Login() {
               <div className="p-4 rounded-xl bg-secondary/50">
                 <Shield className="h-5 w-5 text-primary mb-2" />
                 <h3 className="text-sm font-semibold text-foreground">Privacy-First</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">No cookies, GDPR compliant</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Self-hosted with configurable privacy controls</p>
               </div>
               <div className="p-4 rounded-xl bg-secondary/50">
                 <Activity className="h-5 w-5 text-primary mb-2" />
