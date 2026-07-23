@@ -23,3 +23,12 @@ jobs:
 
       - name: Test
         run: make test
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lifecycle race tests
+        run: go test -race ./internal/buffer ./internal/migrate ./cmd/etiquetta
+
+      - name: Validate installer
+        run: bash -n install.sh

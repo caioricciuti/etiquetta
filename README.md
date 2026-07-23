@@ -35,7 +35,7 @@ curl -sSL https://raw.githubusercontent.com/caioricciuti/etiquetta/main/install.
 ## Features
 
 - **Single Binary** - Go backend with embedded UI, no external dependencies
-- **SQLite Storage** - WAL mode for fast, reliable analytics storage
+- **DuckDB Storage** - Embedded analytical storage in the same self-hosted data directory
 - **Privacy-First** - Server-side session computation, no third-party cookies
 - **Multi-Domain** - Track multiple websites from one installation
 - **Real-Time Analytics** - Pageviews, visitors, referrers, and more
@@ -89,7 +89,7 @@ rm -rf ./data
 
 ## Build from Source
 
-Requires Go 1.22+ and Bun.
+Requires Go 1.24+ and Bun.
 
 ```bash
 git clone https://github.com/caioricciuti/etiquetta.git
@@ -121,8 +121,26 @@ Environment variables (or `.env` file):
 | ------------------------- | -------- | --------------------------------------------------------------- |
 | `ETIQUETTA_PORT`          | `3456`   | HTTP server port                                                |
 | `ETIQUETTA_DATA_DIR`      | `./data` | Database storage directory                                      |
-| `ETIQUETTA_JWT_SECRET`    | (random) | JWT signing secret (auto-generated if not set)                  |
-| `ETIQUETTA_SECURE_COOKIES`| `false`  | Set to `true` only if running HTTPS directly (not behind proxy) |
+| `ETIQUETTA_SECURE_COOKIES`| `false`  | Set to `true` whenever users access Etiquetta over HTTPS, including behind a reverse proxy |
+
+## Production Backups
+
+Backups are offline and non-destructive. Stop Etiquetta, keep it stopped for the
+whole command, and write the archive outside the data directory:
+
+```bash
+sudo systemctl stop etiquetta
+sudo install -d -o etiquetta -g etiquetta -m 0700 /var/backups/etiquetta
+sudo -u etiquetta etiquetta --data /var/lib/etiquetta backup \
+  --output /var/backups/etiquetta/etiquetta-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+```
+
+The command refuses to run while DuckDB is in use, checkpoints the database,
+archives the complete data directory, and writes both an embedded manifest and a
+`.sha256` sidecar. Store both files in a separate, encrypted location. Test a
+restore on a staging instance before relying on the backup for an upgrade.
+See the [production upgrade and rollback runbook](docs/production-upgrade.md)
+before changing a live installation.
 
 ## Tracking Setup
 
@@ -137,13 +155,13 @@ Environment variables (or `.env` file):
 Add this snippet to your website's `<head>`:
 
 ```html
-<script defer src="https://your-etiquetta-instance.com/s.js"></script>
+<script defer data-site="YOUR_SITE_ID" src="https://your-etiquetta-instance.com/s.js?id=YOUR_SITE_ID"></script>
 ```
 
 The tracker automatically collects:
 
 - Pageviews with SPA navigation support
-- Unique visitors (fingerprint-based, no cookies)
+- Unique visitors (fingerprint-based in cookieless mode, or persistent identifiers when configured)
 - Referrer information
 - Core Web Vitals (LCP, FCP, CLS, INP, TTFB)
 - JavaScript errors
@@ -152,12 +170,12 @@ The tracker automatically collects:
 - Engagement time
 - Bot detection signals
 
-### Respecting Privacy
+### Privacy configuration
 
-- **Do-Not-Track**: Honors the browser's DNT setting by default
-- **No Cookies**: Uses server-side fingerprinting, no client-side storage
-- **Data Ownership**: All data stays on your server
-- **GDPR Friendly**: No personal data collection
+- **DNT/GPC**: The analytics tracker can honor browser privacy signals.
+- **Visitor identification**: Cookie, local-storage, and cookieless modes have different privacy and continuity trade-offs.
+- **Data ownership**: Analytics data is stored on your Etiquetta server, while configured tags and map/editor integrations may contact third parties.
+- **Consent and legal basis**: Cookieless tracking is not automatically exempt from consent or data-protection requirements. Configure each property for its jurisdiction and obtain legal advice for your use case.
 
 ## Pricing
 
@@ -247,7 +265,7 @@ etiquetta/
 ├── internal/
 │   ├── api/          # HTTP handlers and router
 │   ├── auth/         # JWT authentication
-│   ├── database/     # SQLite with migrations
+│   ├── database/     # DuckDB with transactional migrations
 │   ├── enrichment/   # GeoIP, bot detection
 │   └── licensing/    # License verification
 ├── ui/               # React frontend (Vite + shadcn)
@@ -256,7 +274,7 @@ etiquetta/
 │   │   ├── hooks/
 │   │   └── pages/
 │   └── dist/         # Built UI (embedded in binary)
-└── data/             # SQLite database (created at runtime)
+└── data/             # DuckDB database and local runtime state
 ```
 
 ## Contributing
