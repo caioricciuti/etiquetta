@@ -836,6 +836,66 @@ func (db *DB) Migrate() error {
 				CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
 			`,
 		},
+		{
+			// Corrective migration: some databases recorded version 27 without
+			// its tables ever being created (an earlier build claimed version 27
+			// for different SQL, so the real v27 never ran). Because the runner
+			// only applies versions greater than the max recorded, alerts,
+			// webhooks, and alert_fires would otherwise never appear. These are
+			// the exact statements from migration 27; IF NOT EXISTS makes this a
+			// no-op on databases where 27 applied correctly.
+			version: 31,
+			sql: `
+				CREATE TABLE IF NOT EXISTS alerts (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					metric VARCHAR NOT NULL,
+					comparator VARCHAR NOT NULL DEFAULT 'gt',
+					threshold DOUBLE NOT NULL,
+					window_minutes INTEGER NOT NULL DEFAULT 60,
+					cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+					channels VARCHAR NOT NULL DEFAULT '[]',
+					recipients VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_alerts_domain ON alerts(domain_id);
+				CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts(enabled);
+
+				CREATE TABLE IF NOT EXISTS webhooks (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					secret VARCHAR NOT NULL,
+					events VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL,
+					last_fired_at BIGINT,
+					last_status INTEGER,
+					last_error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_webhooks_domain ON webhooks(domain_id);
+
+				CREATE TABLE IF NOT EXISTS alert_fires (
+					id VARCHAR PRIMARY KEY,
+					alert_id VARCHAR NOT NULL,
+					domain_id VARCHAR NOT NULL,
+					fired_at BIGINT NOT NULL,
+					metric_value DOUBLE NOT NULL,
+					threshold DOUBLE NOT NULL,
+					channels_sent VARCHAR NOT NULL DEFAULT '[]',
+					error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_alert ON alert_fires(alert_id, fired_at);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_domain ON alert_fires(domain_id, fired_at);
+			`,
+		},
 	}
 
 	for _, m := range migrations {
