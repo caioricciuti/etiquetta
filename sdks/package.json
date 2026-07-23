@@ -1,0 +1,5 @@
+{
+  "name": "@etiquetta/sdks",
+  "private": true,
+  "workspaces": ["node", "next"]
+}
