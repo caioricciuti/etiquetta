@@ -1,0 +1,34 @@
+{
+  "name": "@etiquetta/node",
+  "version": "0.1.0",
+  "description": "Server-side tracking SDK for Etiquetta analytics",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caioricciuti/etiquetta",
+    "directory": "sdks/node"
+  },
+  "keywords": ["analytics", "etiquetta", "tracking", "sdk"],
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^20.19.43"
+  }
+}

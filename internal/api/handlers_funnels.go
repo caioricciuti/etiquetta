@@ -194,9 +194,13 @@ func (h *Handlers) GetFunnelMetrics(w http.ResponseWriter, r *http.Request) {
 	// Load funnel definition
 	var stepsJSON string
 	var funnelName string
+	var domain string
 	err := h.db.Conn().QueryRowContext(r.Context(),
-		"SELECT name, steps FROM funnels WHERE id = ?", funnelID,
-	).Scan(&funnelName, &stepsJSON)
+		`SELECT f.name, f.steps, d.domain
+		 FROM funnels f
+		 JOIN domains d ON d.id = f.domain_id
+		 WHERE f.id = ?`, funnelID,
+	).Scan(&funnelName, &stepsJSON, &domain)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "funnel not found")
 		return
@@ -232,20 +236,20 @@ func (h *Handlers) GetFunnelMetrics(w http.ResponseWriter, r *http.Request) {
 				`step%d AS (
 					SELECT DISTINCT visitor_hash, MIN(timestamp) AS ts
 					FROM events
-					WHERE %s AND is_bot = 0 AND timestamp BETWEEN ? AND ?
+					WHERE %s AND domain = ? AND is_bot = 0 AND timestamp BETWEEN ? AND ?
 					GROUP BY visitor_hash
 				)`, i, condition))
-			args = append(args, startMs.UnixMilli(), endMs.UnixMilli())
+			args = append(args, domain, startMs.UnixMilli(), endMs.UnixMilli())
 		} else {
 			ctes = append(ctes, fmt.Sprintf(
 				`step%d AS (
 					SELECT DISTINCT e.visitor_hash, MIN(e.timestamp) AS ts
 					FROM events e
 					INNER JOIN step%d prev ON e.visitor_hash = prev.visitor_hash AND e.timestamp > prev.ts
-					WHERE %s AND e.is_bot = 0 AND e.timestamp BETWEEN ? AND ?
+					WHERE %s AND e.domain = ? AND e.is_bot = 0 AND e.timestamp BETWEEN ? AND ?
 					GROUP BY e.visitor_hash
 				)`, i, i-1, condition))
-			args = append(args, startMs.UnixMilli(), endMs.UnixMilli())
+			args = append(args, domain, startMs.UnixMilli(), endMs.UnixMilli())
 		}
 	}
 

@@ -224,7 +224,7 @@ export function BotAnalysis() {
                 <PieChart>
                   <ChartTooltip content={<ChartTooltipContent nameKey="name" hideLabel />} />
                   <ChartLegend content={<ChartLegendContent nameKey="name" />} />
-                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" nameKey="name">
+                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" nameKey="name" isAnimationActive={false}>
                     {pieData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.fill} />
                     ))}

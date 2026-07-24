@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ import (
 type Compactor struct {
 	db        *sql.DB
 	bufferMgr *BufferManager
+	wg        sync.WaitGroup
 }
 
 // NewCompactor creates a new compactor.
@@ -42,7 +44,9 @@ func (c *Compactor) RunCompaction(ctx context.Context) error {
 
 // StartSchedule runs compaction daily at the specified hour.
 func (c *Compactor) StartSchedule(ctx context.Context, hour int) {
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		for {
 			now := time.Now()
 			next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
@@ -63,4 +67,10 @@ func (c *Compactor) StartSchedule(ctx context.Context, hour int) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until the scheduled compaction goroutine has stopped. Callers
+// should cancel the context passed to StartSchedule before calling Wait.
+func (c *Compactor) Wait() {
+	c.wg.Wait()
 }

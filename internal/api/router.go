@@ -25,6 +25,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/licensing"
 	"github.com/caioricciuti/etiquetta/internal/migrate"
 	"github.com/caioricciuti/etiquetta/internal/replay"
+	"github.com/caioricciuti/etiquetta/internal/sso"
 )
 
 //go:embed tracker.js
@@ -41,6 +42,19 @@ var rrwebJS embed.FS
 
 // NewRouter creates the HTTP router
 func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager, migrateManager *migrate.JobManager, replayMgr *replay.Store) http.Handler {
+	r, _ := newRouterWithHandlers(db, enricher, licenseManager, cfg, uiFS, bufferMgr, connStore, syncManager, migrateManager, replayMgr)
+	return r
+}
+
+// NewRouterWithShutdown builds the router and returns a shutdown hook that
+// releases long-lived connections (SSE streams) so graceful shutdown drains
+// promptly instead of blocking on idle dashboards.
+func NewRouterWithShutdown(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager, migrateManager *migrate.JobManager, replayMgr *replay.Store) (http.Handler, func()) {
+	r, h := newRouterWithHandlers(db, enricher, licenseManager, cfg, uiFS, bufferMgr, connStore, syncManager, migrateManager, replayMgr)
+	return r, h.Shutdown
+}
+
+func newRouterWithHandlers(db *database.DB, enricher *enrichment.Enricher, licenseManager *licensing.Manager, cfg *config.Config, uiFS fs.FS, bufferMgr *buffer.BufferManager, connStore *connections.Store, syncManager *connections.SyncManager, migrateManager *migrate.JobManager, replayMgr *replay.Store) (http.Handler, *Handlers) {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -92,6 +106,7 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		connStore:      connStore,
 		syncManager:    syncManager,
 		migrateManager: migrateManager,
+		ssoClient:      sso.NewClient(),
 		dbMu:           bufferMgr.DBMu(),
 		useRollups:     os.Getenv("ETIQUETTA_USE_ROLLUPS") == "true",
 	}
@@ -156,6 +171,11 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			r.Post("/login", h.Login)
 			r.Post("/logout", h.Logout)
 
+			// SSO — public list + redirect + callback
+			r.Get("/sso", h.ListPublicSSOProviders)
+			r.Get("/sso/{id}/login", h.InitSSOLogin)
+			r.Get("/sso/{id}/callback", h.SSOCallback)
+
 			// Protected auth routes
 			r.Group(func(r chi.Router) {
 				r.Use(authMiddleware.RequireAuth)
@@ -165,28 +185,36 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 			})
 		})
 
-		// License info (public - needed for UI to check features)
-		r.Get("/license", h.GetLicense)
-
 		// SSE endpoint — auth-protected but NOT db-read-locked (long-lived connection
 		// would block compaction if it held RLock for its entire lifetime).
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.RequireAuth)
+			r.Use(h.domainAccessScopeMiddleware)
 			r.Get("/events/stream", h.EventStream)
 		})
 
 		// Protected routes — db read lock prevents heap corruption during compaction
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.RequireAuth)
+			r.Use(h.domainAccessScopeMiddleware)
 			r.Use(h.dbReadLockMiddleware)
 
-			// License management
-			r.Post("/license", h.UploadLicense)
-			r.Delete("/license", h.RemoveLicense)
+			// Authenticated clients need feature capabilities. The handler strips
+			// licensee and expiry metadata for non-admin users.
+			r.Get("/license", h.GetLicense)
 
-			// Settings
-			r.Get("/settings", h.GetSettings)
-			r.Put("/settings", h.UpdateSettings)
+			// Sensitive instance administration. Raw settings include security-sensitive
+			// values and the database endpoints expose the complete application store,
+			// so authenticated viewers must never be able to reach these handlers.
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Post("/license", h.UploadLicense)
+				r.Delete("/license", h.RemoveLicense)
+				r.Get("/settings", h.GetSettings)
+				r.Put("/settings", h.UpdateSettings)
+				r.Get("/db", h.ServeDatabase)
+				r.Get("/db/info", h.GetDatabaseInfo)
+			})
 
 			// GeoIP Settings (admin only)
 			r.Group(func(r chi.Router) {
@@ -211,6 +239,16 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Put("/settings/ai-crawlers", h.UpdateAICrawlerSettings)
 			})
 
+			// SSO provider management (admin only, Pro/Enterprise)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureSSO))
+				r.Get("/settings/sso", h.ListSSOProviders)
+				r.Post("/settings/sso", h.CreateSSOProvider)
+				r.Put("/settings/sso/{id}", h.UpdateSSOProvider)
+				r.Delete("/settings/sso/{id}", h.DeleteSSOProvider)
+			})
+
 			// Email Settings (admin only)
 			r.Group(func(r chi.Router) {
 				r.Use(authMiddleware.RequireAdmin)
@@ -219,68 +257,80 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Post("/settings/email/test", h.TestEmailSettings)
 			})
 
-			// Database access
-			r.Get("/db", h.ServeDatabase)
-			r.Get("/db/info", h.GetDatabaseInfo)
+			// Analytics requests use the tracked hostname as their domain key. A
+			// viewer must select one assigned domain; only admins may aggregate.
+			r.Group(func(r chi.Router) {
+				r.Use(h.requireViewerDomainQuery("domain", domainReferenceName, true))
+				r.Get("/stats/overview", h.GetStatsOverview)
+				r.Get("/stats/timeseries", h.GetStatsTimeseries)
+				r.Get("/stats/pages", h.GetStatsPages)
+				r.Get("/stats/referrers", h.GetStatsReferrers)
+				r.Get("/stats/geo", h.GetStatsGeo)
+				r.Get("/stats/map", h.GetStatsMapData)
+				r.Get("/stats/devices", h.GetStatsDevices)
+				r.Get("/stats/browsers", h.GetStatsBrowsers)
+				r.Get("/stats/campaigns", h.GetStatsCampaigns)
+				r.Get("/stats/events", h.GetStatsCustomEvents)
+				r.Get("/stats/events/summary", h.GetStatsEventsSummary)
+				r.Get("/stats/events/timeseries", h.GetStatsEventsTimeseries)
+				r.Get("/stats/events/props", h.GetStatsEventsProps)
+				r.Get("/stats/outbound", h.GetStatsOutbound)
+				r.Get("/stats/bots", h.GetStatsBots)                        // Bot traffic breakdown
+				r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
+				r.Get("/stats/compare", h.GetStatsCompare)                  // Period comparison
+				r.Get("/stats/live", h.GetStatsLive)                        // Real-time snapshot
 
-			// Stats endpoints
-			r.Get("/stats/overview", h.GetStatsOverview)
-			r.Get("/stats/timeseries", h.GetStatsTimeseries)
-			r.Get("/stats/pages", h.GetStatsPages)
-			r.Get("/stats/referrers", h.GetStatsReferrers)
-			r.Get("/stats/geo", h.GetStatsGeo)
-			r.Get("/stats/map", h.GetStatsMapData)
-			r.Get("/stats/devices", h.GetStatsDevices)
-			r.Get("/stats/browsers", h.GetStatsBrowsers)
-			r.Get("/stats/campaigns", h.GetStatsCampaigns)
-			r.Get("/stats/events", h.GetStatsCustomEvents)
-			r.Get("/stats/events/summary", h.GetStatsEventsSummary)
-			r.Get("/stats/events/timeseries", h.GetStatsEventsTimeseries)
-			r.Get("/stats/events/props", h.GetStatsEventsProps)
-			r.Get("/stats/outbound", h.GetStatsOutbound)
-			r.Get("/stats/bots", h.GetStatsBots)                        // Bot traffic breakdown
-			r.Get("/stats/calendar-heatmap", h.GetStatsCalendarHeatmap) // Calendar heatmap data
-			r.Get("/stats/compare", h.GetStatsCompare)                  // Period comparison
-			r.Get("/stats/live", h.GetStatsLive)                        // Real-time snapshot
+				// Heatmaps (click + scroll) — built from existing click_x/click_y + scroll data
+				r.Get("/stats/heatmap/pages", h.GetStatsHeatmapPages)
+				r.Get("/stats/heatmap/clicks", h.GetStatsHeatmapClicks)
+				r.Get("/stats/heatmap/scroll", h.GetStatsHeatmapScroll)
 
-			// Heatmaps (click + scroll) — built from existing click_x/click_y + scroll data
-			r.Get("/stats/heatmap/pages", h.GetStatsHeatmapPages)
-			r.Get("/stats/heatmap/clicks", h.GetStatsHeatmapClicks)
-			r.Get("/stats/heatmap/scroll", h.GetStatsHeatmapScroll)
+				// Install debugger — confirms data is flowing + shows what's collected
+				r.Get("/install/status", h.GetInstallStatus)
+			})
 
-			// API token management
-			r.Post("/tokens", h.CreateAPIToken)
+			// API token reads remain available to viewers; issuing or revoking a
+			// credential changes instance access and is admin-only.
 			r.Get("/tokens", h.ListAPITokens)
-			r.Delete("/tokens/{id}", h.RevokeAPIToken)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Post("/tokens", h.CreateAPIToken)
+				r.Delete("/tokens/{id}", h.RevokeAPIToken)
+			})
 
-			// Domain management
+			// Domain reads remain available to viewers. Creating and deleting
+			// properties changes collection behavior and is admin-only.
 			r.Get("/domains", h.ListDomains)
-			r.Post("/domains", h.CreateDomain)
-			r.Delete("/domains/{id}", h.DeleteDomain)
-			r.Get("/domains/{id}/snippet", h.GetDomainSnippet)
+			r.With(h.requireViewerDomainPath("id", domainReferenceID)).Get("/domains/{id}/snippet", h.GetDomainSnippet)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Post("/domains", h.CreateDomain)
+				r.Delete("/domains/{id}", h.DeleteDomain)
+			})
 
-			// Install debugger — confirms data is flowing + shows what's collected
-			r.Get("/install/status", h.GetInstallStatus)
-
-			// Share links
-			r.Get("/share-links", h.ListShareLinks)
-			r.Post("/share-links", h.CreateShareLink)
-			r.Delete("/share-links/{id}", h.DeleteShareLink)
-
-			// Annotations
-			r.Get("/annotations", h.ListAnnotations)
-			r.Post("/annotations", h.CreateAnnotation)
-			r.Put("/annotations/{id}", h.UpdateAnnotation)
-			r.Delete("/annotations/{id}", h.DeleteAnnotation)
+			// Share-link and annotation reads remain available to viewers. All
+			// changes are admin-only so the viewer role is consistently read-only.
+			r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/share-links", h.ListShareLinks)
+			r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/annotations", h.ListAnnotations)
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Post("/share-links", h.CreateShareLink)
+				r.Delete("/share-links/{id}", h.DeleteShareLink)
+				r.Post("/annotations", h.CreateAnnotation)
+				r.Put("/annotations/{id}", h.UpdateAnnotation)
+				r.Delete("/annotations/{id}", h.DeleteAnnotation)
+			})
 
 			// Pro features - Web Vitals
 			r.Group(func(r chi.Router) {
+				r.Use(h.requireViewerDomainQuery("domain", domainReferenceName, true))
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeaturePerformance))
 				r.Get("/stats/vitals", h.GetStatsVitals)
 			})
 
 			// Pro features - Error tracking
 			r.Group(func(r chi.Router) {
+				r.Use(h.requireViewerDomainQuery("domain", domainReferenceName, true))
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureErrorTracking))
 				r.Get("/stats/errors", h.GetStatsErrors)
 				r.Get("/stats/errors/detail", h.GetStatsErrorDetail)
@@ -289,91 +339,141 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 
 			// Pro features - Export
 			r.Group(func(r chi.Router) {
+				r.Use(h.requireViewerDomainQuery("domain", domainReferenceName, true))
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureExport))
 				r.Get("/export/events", h.ExportEvents)
 			})
 
-			// Pro features - Funnels
+			// Pro features - Funnels, Goals & Cohorts (viewer reads)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureFunnels))
-				r.Get("/funnels", h.ListFunnels)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/funnels", h.ListFunnels)
+				r.With(h.requireViewerResourceDomain("id", domainReferenceID, "SELECT domain_id FROM funnels WHERE id = ?")).Get("/funnels/{id}/metrics", h.GetFunnelMetrics)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/goals", h.ListGoals)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/stats/goals", h.GetGoalStats)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/stats/custom-events", h.GetCustomEventNames)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/cohorts", h.ListCohorts)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/stats/retention", h.GetRetention)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureFunnels))
 				r.Post("/funnels", h.CreateFunnel)
 				r.Put("/funnels/{id}", h.UpdateFunnel)
 				r.Delete("/funnels/{id}", h.DeleteFunnel)
-				r.Get("/funnels/{id}/metrics", h.GetFunnelMetrics)
+				r.Post("/goals", h.CreateGoal)
+				r.Put("/goals/{id}", h.UpdateGoal)
+				r.Delete("/goals/{id}", h.DeleteGoal)
+				r.Post("/cohorts", h.CreateCohort)
+				r.Put("/cohorts/{id}", h.UpdateCohort)
+				r.Delete("/cohorts/{id}", h.DeleteCohort)
 			})
 
-			// Pro features - Ad Fraud Detection
+			// Pro features - Alerts & Webhooks (viewer reads)
+			r.Group(func(r chi.Router) {
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureAlerts))
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/alerts", h.ListAlerts)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/alerts/fires", h.ListAlertFires)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, true)).Get("/webhooks", h.ListWebhooks)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureAlerts))
+				r.Post("/alerts", h.CreateAlert)
+				r.Put("/alerts/{id}", h.UpdateAlert)
+				r.Delete("/alerts/{id}", h.DeleteAlert)
+				r.Post("/webhooks", h.CreateWebhook)
+				r.Put("/webhooks/{id}", h.UpdateWebhook)
+				r.Delete("/webhooks/{id}", h.DeleteWebhook)
+				r.Post("/webhooks/{id}/test", h.TestWebhook)
+			})
+
+			// Pro features - Ad Fraud Detection (viewer reads)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureAdFraud))
-				r.Get("/stats/fraud", h.GetFraudSummary)
-				r.Get("/stats/fraud/event-names", h.GetAvailableEventNames)
-				r.Get("/sources/quality", h.GetSourceQuality)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, true)).Get("/stats/fraud", h.GetFraudSummary)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, true)).Get("/stats/fraud/event-names", h.GetAvailableEventNames)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, true)).Get("/sources/quality", h.GetSourceQuality)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureAdFraud))
 				r.Get("/campaigns", h.ListCampaigns)
-				r.Post("/campaigns", h.CreateCampaign)
 				r.Get("/campaigns/{id}/report", h.GetCampaignReport)
+				r.Post("/campaigns", h.CreateCampaign)
 				r.Delete("/campaigns/{id}", h.DeleteCampaign)
 			})
 
-			// Pro features - Consent Management
+			// Pro features - Consent Management (viewer reads, admin writes)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureConsent))
-				r.Get("/consent/configs/{domainId}", h.GetConsentConfig)
+				r.With(h.requireViewerDomainPath("domainId", domainReferenceID)).Get("/consent/configs/{domainId}", h.GetConsentConfig)
+				r.With(h.requireViewerDomainPath("domainId", domainReferenceID)).Get("/consent/configs/{domainId}/history", h.GetConsentConfigHistory)
+				r.With(h.requireViewerDomainPath("domainId", domainReferenceID)).Get("/consent/analytics/{domainId}", h.GetConsentAnalytics)
+				r.With(h.requireViewerDomainPath("domainId", domainReferenceID)).Get("/consent/records/{domainId}", h.GetConsentRecords)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureConsent))
 				r.Post("/consent/configs/{domainId}", h.SaveConsentConfig)
 				r.Put("/consent/configs/{domainId}/toggle", h.ToggleConsentBanner)
-				r.Get("/consent/configs/{domainId}/history", h.GetConsentConfigHistory)
-				r.Get("/consent/analytics/{domainId}", h.GetConsentAnalytics)
-				r.Get("/consent/records/{domainId}", h.GetConsentRecords)
 			})
 
-			// Pro features - Tag Manager
+			// Pro features - Tag Manager (viewer reads)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureTagManager))
 				r.Get("/tagmanager/containers", h.ListContainers)
+				r.With(h.requireViewerResourceDomain("id", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{id}", h.GetContainer)
+				r.With(h.requireViewerResourceDomain("id", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{id}/versions", h.GetContainerVersions)
+				r.With(h.requireViewerResourceDomain("id", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{id}/export", h.ExportContainer)
+
+				// Tag, trigger, and variable reads
+				r.With(h.requireViewerResourceDomain("cid", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{cid}/tags", h.ListTags)
+				r.With(h.requireViewerResourceDomain("cid", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{cid}/tags/{id}", h.GetTag)
+				r.With(h.requireViewerResourceDomain("cid", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{cid}/triggers", h.ListTriggers)
+				r.With(h.requireViewerResourceDomain("cid", domainReferenceID, "SELECT domain_id FROM tm_containers WHERE id = ?")).Get("/tagmanager/containers/{cid}/variables", h.ListVariables)
+			})
+
+			// Publishing, previewing, imports, and all Tag Manager mutations can
+			// execute code on tracked sites and therefore require an administrator.
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureTagManager))
 				r.Post("/tagmanager/containers", h.CreateContainer)
-				r.Get("/tagmanager/containers/{id}", h.GetContainer)
 				r.Put("/tagmanager/containers/{id}", h.UpdateContainer)
 				r.Delete("/tagmanager/containers/{id}", h.DeleteContainer)
 				r.Post("/tagmanager/containers/{id}/publish", h.PublishContainer)
-				r.Get("/tagmanager/containers/{id}/versions", h.GetContainerVersions)
 				r.Post("/tagmanager/containers/{id}/rollback/{version}", h.RollbackContainer)
-				r.Get("/tagmanager/containers/{id}/export", h.ExportContainer)
 				r.Post("/tagmanager/containers/{id}/import", h.ImportContainer)
 				r.Post("/tagmanager/containers/{id}/preview-token", h.PreviewToken)
 				r.Get("/tagmanager/pick-result", h.GetPickResult)
-
-				// Tag CRUD
-				r.Get("/tagmanager/containers/{cid}/tags", h.ListTags)
 				r.Post("/tagmanager/containers/{cid}/tags", h.CreateTag)
-				r.Get("/tagmanager/containers/{cid}/tags/{id}", h.GetTag)
 				r.Put("/tagmanager/containers/{cid}/tags/{id}", h.UpdateTag)
 				r.Delete("/tagmanager/containers/{cid}/tags/{id}", h.DeleteTag)
-
-				// Trigger CRUD
-				r.Get("/tagmanager/containers/{cid}/triggers", h.ListTriggers)
 				r.Post("/tagmanager/containers/{cid}/triggers", h.CreateTrigger)
 				r.Put("/tagmanager/containers/{cid}/triggers/{id}", h.UpdateTrigger)
 				r.Delete("/tagmanager/containers/{cid}/triggers/{id}", h.DeleteTrigger)
-
-				// Variable CRUD
-				r.Get("/tagmanager/containers/{cid}/variables", h.ListVariables)
 				r.Post("/tagmanager/containers/{cid}/variables", h.CreateVariable)
 				r.Put("/tagmanager/containers/{cid}/variables/{id}", h.UpdateVariable)
 				r.Delete("/tagmanager/containers/{cid}/variables/{id}", h.DeleteVariable)
 			})
 
-			// Connections (ad platform integrations)
+			// Connections (viewer reads)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureConnections))
-				r.Get("/connections", h.ListConnections)
-				r.Post("/connections", h.CreateConnection)
+				r.With(h.requireViewerDomainQuery("domain_id", domainReferenceID, false)).Get("/connections", h.ListConnections)
 				r.Get("/connections/providers", h.GetProviders)
-				r.Get("/connections/{id}", h.GetConnection)
+				r.With(h.requireViewerResourceDomain("id", domainReferenceID, "SELECT domain_id FROM ad_connections WHERE id = ?")).Get("/connections/{id}", h.GetConnection)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, true)).Get("/stats/ad-spend", h.GetAdSpend)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, true)).Get("/stats/ad-attribution", h.GetAdAttribution)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureConnections))
+				r.Post("/connections", h.CreateConnection)
 				r.Put("/connections/{id}/tokens", h.UpdateConnectionToken)
 				r.Delete("/connections/{id}", h.DeleteConnection)
 				r.Post("/connections/{id}/sync", h.SyncConnection)
-				r.Get("/stats/ad-spend", h.GetAdSpend)
-				r.Get("/stats/ad-attribution", h.GetAdAttribution)
 			})
 
 			// Google Ads Settings (admin only)
@@ -439,16 +539,20 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 				r.Post("/migrate/gtm/convert", h.MigrateGTMConvert)
 			})
 
-			// Pro features - Session Replay
+			// Pro features - Session Replay (viewer reads)
 			r.Group(func(r chi.Router) {
 				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureSessionReplay))
-				r.Get("/replays", h.ListReplays)
+				r.With(h.requireViewerDomainQuery("domain", domainReferenceName, false)).Get("/replays", h.ListReplays)
 				r.Get("/replays/stats", h.GetReplayStats)
 				r.Get("/replays/settings", h.GetReplaySettings)
+				r.With(h.requireViewerResourceDomain("sessionId", domainReferenceName, "SELECT domain FROM session_recordings WHERE session_id = ?")).Get("/replays/{sessionId}", h.GetReplay)
+				r.With(h.requireViewerResourceDomain("sessionId", domainReferenceName, "SELECT domain FROM session_recordings WHERE session_id = ?")).Get("/replays/{sessionId}/events", h.GetSessionEvents)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+				r.Use(licensing.RequireFeature(licenseManager, licensing.FeatureSessionReplay))
 				r.Put("/replays/settings", h.UpdateReplaySettings)
 				r.Delete("/replays/batch", h.DeleteReplaysBatch)
-				r.Get("/replays/{sessionId}", h.GetReplay)
-				r.Get("/replays/{sessionId}/events", h.GetSessionEvents)
 				r.Delete("/replays/{sessionId}", h.DeleteReplay)
 			})
 
@@ -528,5 +632,5 @@ func NewRouter(db *database.DB, enricher *enrichment.Enricher, licenseManager *l
 		http.ServeContent(w, req, "index.html", stat.ModTime(), strings.NewReader(string(content)))
 	})
 
-	return r
+	return r, h
 }

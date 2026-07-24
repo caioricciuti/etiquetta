@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - uses: oven-sh/setup-bun@v2
 
@@ -23,3 +23,12 @@ jobs:
 
       - name: Test
         run: make test
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lifecycle race tests
+        run: go test -race ./internal/buffer ./internal/migrate ./cmd/etiquetta
+
+      - name: Validate installer
+        run: bash -n install.sh

@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,23 +12,42 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/buffer"
 )
 
+var (
+	// ErrJobManagerShuttingDown is returned when a new import is submitted
+	// after shutdown has started.
+	ErrJobManagerShuttingDown = errors.New("import job manager is shutting down")
+	// ErrJobAlreadyRunning is returned if the same job ID is started twice.
+	ErrJobAlreadyRunning = errors.New("import job is already running")
+)
+
+type runningJob struct {
+	cancel context.CancelFunc
+}
+
 // JobManager manages import jobs.
 type JobManager struct {
 	store     *Store
 	bufferMgr *buffer.BufferManager
 	dataDir   string
 	mu        sync.Mutex
-	running   map[string]context.CancelFunc
+	running   map[string]*runningJob
+	stopping  bool
+	wg        sync.WaitGroup
+	stopDone  chan struct{}
+	run       func(context.Context, string, string)
 }
 
 // NewJobManager creates a new JobManager.
 func NewJobManager(store *Store, bufferMgr *buffer.BufferManager, dataDir string) *JobManager {
-	return &JobManager{
+	jm := &JobManager{
 		store:     store,
 		bufferMgr: bufferMgr,
 		dataDir:   dataDir,
-		running:   make(map[string]context.CancelFunc),
+		running:   make(map[string]*runningJob),
+		stopDone:  make(chan struct{}),
 	}
+	jm.run = jm.executeJob
+	return jm
 }
 
 // Store returns the underlying store for direct queries.
@@ -40,24 +60,43 @@ func (jm *JobManager) TempDir() string {
 	return jm.dataDir + "/migrate_tmp"
 }
 
-// RunJob starts an import job in the background.
-func (jm *JobManager) RunJob(jobID, filePath string) {
+// RunJob starts an import job in the background. Registration and WaitGroup
+// ownership happen before the goroutine starts, so Shutdown cannot miss a job
+// racing with it.
+func (jm *JobManager) RunJob(jobID, filePath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
+	running := &runningJob{cancel: cancel}
 
 	jm.mu.Lock()
-	jm.running[jobID] = cancel
+	if jm.stopping {
+		jm.mu.Unlock()
+		cancel()
+		return ErrJobManagerShuttingDown
+	}
+	if _, exists := jm.running[jobID]; exists {
+		jm.mu.Unlock()
+		cancel()
+		return fmt.Errorf("%w: %s", ErrJobAlreadyRunning, jobID)
+	}
+	jm.running[jobID] = running
+	jm.wg.Add(1)
 	jm.mu.Unlock()
 
 	go func() {
+		defer jm.wg.Done()
 		defer func() {
 			jm.mu.Lock()
-			delete(jm.running, jobID)
+			if jm.running[jobID] == running {
+				delete(jm.running, jobID)
+			}
 			jm.mu.Unlock()
 			cancel()
 		}()
 
-		jm.executeJob(ctx, jobID, filePath)
+		jm.run(ctx, jobID, filePath)
 	}()
+
+	return nil
 }
 
 func (jm *JobManager) executeJob(ctx context.Context, jobID, filePath string) {
@@ -150,10 +189,10 @@ func (jm *JobManager) executeJob(ctx context.Context, jobID, filePath string) {
 // CancelJob cancels a running job.
 func (jm *JobManager) CancelJob(jobID string) bool {
 	jm.mu.Lock()
-	cancel, ok := jm.running[jobID]
+	running, ok := jm.running[jobID]
 	jm.mu.Unlock()
 	if ok {
-		cancel()
+		running.cancel()
 		return true
 	}
 	return false
@@ -169,6 +208,14 @@ func (jm *JobManager) Rollback(jobID string) error {
 		return fmt.Errorf("cannot rollback a running job, cancel it first")
 	}
 
+	// Imported rows may still sit in the in-memory buffer or the parquet write
+	// queue; flush and drain so the DELETE below actually sees them.
+	if jm.bufferMgr != nil {
+		if err := jm.bufferMgr.FlushAndWait(context.Background()); err != nil {
+			return fmt.Errorf("failed to flush buffered events before rollback: %w", err)
+		}
+	}
+
 	// Delete events - use the store's DB
 	_, err = jm.store.db.Exec("DELETE FROM events WHERE import_id = ?", jobID)
 	if err != nil {
@@ -178,13 +225,42 @@ func (jm *JobManager) Rollback(jobID string) error {
 	return jm.store.UpdateStatus(jobID, "rolled_back", nil)
 }
 
-// Shutdown cancels all running jobs.
-func (jm *JobManager) Shutdown() {
+// Shutdown prevents new jobs, cancels every registered job, and waits for all
+// job goroutines to stop. A deadline only bounds this call; jobs remain owned
+// by the manager and a later Shutdown call can continue waiting for stopDone.
+func (jm *JobManager) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for id, cancel := range jm.running {
-		log.Printf("[migrate] Cancelling job %s on shutdown", id)
-		cancel()
+	firstShutdown := !jm.stopping
+	jm.stopping = true
+	running := make(map[string]*runningJob, len(jm.running))
+	for id, job := range jm.running {
+		running[id] = job
+	}
+	jm.mu.Unlock()
+
+	for id, job := range running {
+		if firstShutdown {
+			log.Printf("[migrate] Cancelling job %s on shutdown", id)
+		}
+		job.cancel()
+	}
+
+	if firstShutdown {
+		go func() {
+			jm.wg.Wait()
+			close(jm.stopDone)
+		}()
+	}
+
+	select {
+	case <-jm.stopDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for import jobs to stop: %w", ctx.Err())
 	}
 }
 

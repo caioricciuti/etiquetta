@@ -1,0 +1,46 @@
+{
+  "name": "@etiquetta/next",
+  "version": "0.1.0",
+  "description": "Next.js integration for Etiquetta analytics",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware.d.ts",
+      "import": "./dist/middleware.js"
+    },
+    "./script": {
+      "types": "./dist/script.d.ts",
+      "import": "./dist/script.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "bun run build"
+  },
+  "peerDependencies": {
+    "next": ">=13",
+    "react": ">=18"
+  },
+  "dependencies": {
+    "@etiquetta/node": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.31",
+    "next": "^14.2.35",
+    "react": "^18.3.1"
+  }
+}

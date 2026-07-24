@@ -286,8 +286,8 @@ export interface License {
   state: 'valid' | 'expired' | 'tampered' | 'missing'
   features: Record<string, boolean>
   limits: Record<string, number>
-  expires_at: string | null
-  licensee: string
+  expires_at?: string | null
+  licensee?: string
 }
 
 export const defaultLicense: License = {

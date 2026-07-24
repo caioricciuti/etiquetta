@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/licensing"
 	"github.com/caioricciuti/etiquetta/internal/migrate"
 	"github.com/caioricciuti/etiquetta/internal/settings"
+	"github.com/caioricciuti/etiquetta/internal/sso"
 )
 
 // Version is set from main.go at startup
@@ -42,16 +44,46 @@ type Handlers struct {
 	connStore      *connections.Store
 	syncManager    *connections.SyncManager
 	migrateManager *migrate.JobManager
+	ssoClient      *sso.Client
 	dbMu           *sync.RWMutex // guards DuckDB during compaction; handlers take RLock
 
 	// SSE subscribers
-	sseClients map[chan []byte]bool
+	sseClients map[chan []byte]domainAccessScope
 	sseMu      sync.RWMutex
 
 	// useRollups routes additive dashboard metrics to rollup_daily for speed.
 	// Opt-in via ETIQUETTA_USE_ROLLUPS=true; default false keeps byte-identical
 	// behavior. Rollup-backed handlers always fall back to raw events on error.
 	useRollups bool
+
+	// shutdownCh is closed to release all open SSE streams so graceful
+	// shutdown doesn't block on long-lived dashboard connections.
+	shutdownCh chan struct{}
+	shutdownMu sync.Mutex
+}
+
+// Shutdown releases every open SSE stream so http.Server.Shutdown can drain
+// promptly instead of waiting the full timeout on idle dashboards. Idempotent.
+func (h *Handlers) Shutdown() {
+	h.shutdownMu.Lock()
+	defer h.shutdownMu.Unlock()
+	if h.shutdownCh == nil {
+		return
+	}
+	select {
+	case <-h.shutdownCh:
+	default:
+		close(h.shutdownCh)
+	}
+}
+
+func (h *Handlers) shutdownSignal() <-chan struct{} {
+	h.shutdownMu.Lock()
+	defer h.shutdownMu.Unlock()
+	if h.shutdownCh == nil {
+		h.shutdownCh = make(chan struct{})
+	}
+	return h.shutdownCh
 }
 
 // dbReadLockMiddleware acquires a read-lock on dbMu for the duration of the
@@ -116,7 +148,9 @@ func (h *Handlers) GetVersion(w http.ResponseWriter, r *http.Request) {
 // ServeTrackerScript serves the JavaScript tracker
 func (h *Handlers) ServeTrackerScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	// This response includes live per-domain privacy settings. Keep the cache
+	// short so consent and tracking-mode changes take effect promptly.
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
 
 	// Read embedded tracker script
 	script, err := trackerJS.ReadFile("tracker.js")
@@ -573,7 +607,18 @@ func (h *Handlers) parseError(raw map[string]interface{}, sessionID string, enri
 
 // License handlers
 func (h *Handlers) GetLicense(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.licenseManager.GetInfo())
+	claims := auth.GetUserFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	info := h.licenseManager.GetInfo()
+	if claims.Role != "admin" {
+		delete(info, "licensee")
+		delete(info, "expires_at")
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 func (h *Handlers) UploadLicense(w http.ResponseWriter, r *http.Request) {
@@ -603,6 +648,38 @@ func (h *Handlers) RemoveLicense(w http.ResponseWriter, r *http.Request) {
 }
 
 // Settings handlers
+func isRestrictedRawSettingKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "setup_complete" || settings.IsSensitiveKey(normalized) {
+		return true
+	}
+
+	// Keep future credentials out of the catch-all settings API even before
+	// they are added to the settings service's explicit encryption list.
+	credentialMarkers := []string{
+		"password",
+		"secret",
+		"token",
+		"credential",
+		"api_key",
+		"apikey",
+	}
+	for _, marker := range credentialMarkers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+
+	credentialSuffixes := []string{"_key", "_client_id", "_app_id", "_account_id", "_username"}
+	for _, suffix := range credentialSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Conn().Query("SELECT key, value FROM settings")
 	if err != nil {
@@ -614,8 +691,18 @@ func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
 	settings := make(map[string]string)
 	for rows.Next() {
 		var key, value string
-		rows.Scan(&key, &value)
+		if err := rows.Scan(&key, &value); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if isRestrictedRawSettingKey(key) {
+			continue
+		}
 		settings[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, settings)
@@ -628,15 +715,42 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, _ := h.db.Conn().Begin()
+	// Validate the complete payload before opening a transaction so a mixed
+	// safe/restricted request can never result in a partial update.
+	restrictedKeys := make([]string, 0)
+	for key := range settings {
+		if isRestrictedRawSettingKey(key) {
+			restrictedKeys = append(restrictedKeys, key)
+		}
+	}
+	if len(restrictedKeys) > 0 {
+		sort.Strings(restrictedKeys)
+		writeError(w, http.StatusBadRequest, "Restricted settings must be managed through their dedicated endpoint: "+strings.Join(restrictedKeys, ", "))
+		return
+	}
+
+	tx, err := h.db.Conn().Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to begin settings update")
+		return
+	}
+	defer tx.Rollback()
+
 	changedKeys := make([]string, 0, len(settings))
 	for key, value := range settings {
-		tx.Exec("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
-			key, value, time.Now().UnixMilli())
+		if _, err := tx.Exec("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+			key, value, time.Now().UnixMilli()); err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to update settings")
+			return
+		}
 		changedKeys = append(changedKeys, key)
 	}
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to commit settings update")
+		return
+	}
 
+	sort.Strings(changedKeys)
 	h.logAudit(r, "update", "settings", "", "Updated keys: "+strings.Join(changedKeys, ", "))
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -725,12 +839,17 @@ func (h *Handlers) EventStream(w http.ResponseWriter, r *http.Request) {
 
 	// Create client channel
 	client := make(chan []byte, 100)
+	scope, ok := domainScopeFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "domain access scope unavailable")
+		return
+	}
 
 	h.sseMu.Lock()
 	if h.sseClients == nil {
-		h.sseClients = make(map[chan []byte]bool)
+		h.sseClients = make(map[chan []byte]domainAccessScope)
 	}
-	h.sseClients[client] = true
+	h.sseClients[client] = scope
 	h.sseMu.Unlock()
 
 	defer func() {
@@ -748,6 +867,8 @@ func (h *Handlers) EventStream(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	shutdown := h.shutdownSignal()
+
 	for {
 		select {
 		case msg := <-client:
@@ -757,6 +878,9 @@ func (h *Handlers) EventStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-r.Context().Done():
+			return
+		case <-shutdown:
+			// Server is shutting down; end the stream so Shutdown can drain.
 			return
 		}
 	}
@@ -770,28 +894,46 @@ func (h *Handlers) notifyClients(events []*database.Event, perfs []*database.Per
 		return
 	}
 
-	// Build notification
-	notification := map[string]interface{}{
-		"type":        "batch",
-		"events":      len(events),
-		"performance": len(perfs),
-		"errors":      len(errs),
-		"timestamp":   time.Now().UnixMilli(),
-	}
-
-	// Add last event details
-	if len(events) > 0 {
-		last := events[len(events)-1]
-		notification["last_event"] = map[string]interface{}{
-			"type":    last.EventType,
-			"path":    last.Path,
-			"country": last.GeoCountry,
+	timestamp := time.Now().UnixMilli()
+	for client, scope := range h.sseClients {
+		eventCount, perfCount, errorCount := 0, 0, 0
+		var lastEvent *database.Event
+		for _, event := range events {
+			if scope.allowsDomainName(event.Domain) {
+				eventCount++
+				lastEvent = event
+			}
 		}
-	}
+		for _, perf := range perfs {
+			if scope.allowsDomainName(perf.Domain) {
+				perfCount++
+			}
+		}
+		for _, trackedError := range errs {
+			if scope.allowsDomainName(trackedError.Domain) {
+				errorCount++
+			}
+		}
+		if eventCount == 0 && perfCount == 0 && errorCount == 0 {
+			continue
+		}
 
-	data, _ := json.Marshal(notification)
+		notification := map[string]interface{}{
+			"type":        "batch",
+			"events":      eventCount,
+			"performance": perfCount,
+			"errors":      errorCount,
+			"timestamp":   timestamp,
+		}
+		if lastEvent != nil {
+			notification["last_event"] = map[string]interface{}{
+				"type":    lastEvent.EventType,
+				"path":    lastEvent.Path,
+				"country": lastEvent.GeoCountry,
+			}
+		}
+		data, _ := json.Marshal(notification)
 
-	for client := range h.sseClients {
 		select {
 		case client <- data:
 		default:

@@ -3,11 +3,12 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/smtp"
 	"strconv"
+	"time"
 
+	"github.com/caioricciuti/etiquetta/internal/auth"
+	"github.com/caioricciuti/etiquetta/internal/mailer"
 	"github.com/caioricciuti/etiquetta/internal/settings"
 )
 
@@ -23,7 +24,6 @@ type EmailSettings struct {
 	SMTPUseTLS  bool   `json:"smtp_use_tls"`
 	ResendKey   string `json:"resend_api_key"`
 }
-
 func newSettingsService(h *Handlers) *settings.Service {
 	svc := settings.New(h.db.Conn())
 	secretKey, _ := svc.Get("secret_key")
@@ -121,69 +121,64 @@ func (h *Handlers) UpdateEmailSettings(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// TestEmailSettings tests the email configuration by attempting a connection
+// TestEmailSettings sends a real test email using the configured provider.
+// Accepts an optional {"to": "address@example.com"} in the request body;
+// falls back to the authenticated user's email.
 func (h *Handlers) TestEmailSettings(w http.ResponseWriter, r *http.Request) {
 	svc := newSettingsService(h)
 
-	provider := svc.GetWithDefault("email_provider", "disabled")
+	var body struct {
+		To string `json:"to"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	if provider == "disabled" {
+	to := body.To
+	if to == "" {
+		if claims := auth.GetUserFromContext(r.Context()); claims != nil {
+			to = claims.Email
+		}
+	}
+	if to == "" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"message": "Email provider is disabled",
+			"message": "No recipient address provided",
 		})
 		return
 	}
 
-	if provider == "smtp" {
-		host, _ := svc.Get("smtp_host")
-		port := svc.GetInt("smtp_port", 587)
-
-		if host == "" {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success": false,
-				"message": "SMTP host is not configured",
-			})
-			return
-		}
-
-		addr := net.JoinHostPort(host, strconv.Itoa(port))
-		client, err := smtp.Dial(addr)
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success": false,
-				"message": fmt.Sprintf("Failed to connect to SMTP server: %s", err.Error()),
-			})
-			return
-		}
-		client.Close()
-
+	m, err := mailer.FromSettings(svc)
+	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": fmt.Sprintf("Successfully connected to %s", addr),
+			"success": false,
+			"message": err.Error(),
 		})
 		return
 	}
 
-	if provider == "resend" {
-		apiKey, _ := svc.Get("resend_api_key")
-		if apiKey == "" {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success": false,
-				"message": "Resend API key is not configured",
-			})
-			return
-		}
-
+	provider := svc.GetWithDefault("email_provider", "disabled")
+	msg, err := mailer.Render("test", "", map[string]string{
+		"Provider": provider,
+		"From":     m.From(),
+		"SentAt":   time.Now().UTC().Format(time.RFC3339),
+	}, []string{to})
+	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": "Resend API key is configured",
+			"success": false,
+			"message": "Render failed: " + err.Error(),
+		})
+		return
+	}
+
+	if err := m.Send(r.Context(), msg); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"message": err.Error(),
 		})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": false,
-		"message": fmt.Sprintf("Unknown email provider: %s", provider),
+		"success": true,
+		"message": fmt.Sprintf("Test email sent to %s via %s", to, provider),
 	})
 }

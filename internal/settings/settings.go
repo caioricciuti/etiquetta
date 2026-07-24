@@ -18,19 +18,25 @@ import (
 
 // Sensitive keys that should be encrypted
 var sensitiveKeys = map[string]bool{
-	"secret_key":                true,
-	"maxmind_account_id":        true,
-	"maxmind_license_key":       true,
-	"smtp_password":             true,
-	"resend_api_key":            true,
-	"google_ads_client_id":      true,
-	"google_ads_client_secret":  true,
+	"secret_key":                    true,
+	"maxmind_account_id":            true,
+	"maxmind_license_key":           true,
+	"smtp_password":                 true,
+	"resend_api_key":                true,
+	"google_ads_client_id":          true,
+	"google_ads_client_secret":      true,
 	"google_ads_developer_token":    true,
 	"meta_ads_app_id":               true,
 	"meta_ads_app_secret":           true,
 	"microsoft_ads_client_id":       true,
 	"microsoft_ads_client_secret":   true,
 	"microsoft_ads_developer_token": true,
+}
+
+// IsSensitiveKey reports whether a setting is a credential or other secret
+// that must only be handled by its dedicated settings endpoint.
+func IsSensitiveKey(key string) bool {
+	return sensitiveKeys[strings.ToLower(strings.TrimSpace(key))]
 }
 
 // domainSettingsKeys are keys that can be overridden per domain

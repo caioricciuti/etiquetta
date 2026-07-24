@@ -732,6 +732,249 @@ func (db *DB) Migrate() error {
 				CREATE INDEX IF NOT EXISTS idx_rollup_daily_domain_date ON rollup_daily(domain, date_key);
 			`,
 		},
+		{
+			version: 28,
+			sql: `
+				-- Alert rules: one row per configured threshold/anomaly check
+				CREATE TABLE IF NOT EXISTS alerts (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					metric VARCHAR NOT NULL,
+					comparator VARCHAR NOT NULL DEFAULT 'gt',
+					threshold DOUBLE NOT NULL,
+					window_minutes INTEGER NOT NULL DEFAULT 60,
+					cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+					channels VARCHAR NOT NULL DEFAULT '[]',
+					recipients VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_alerts_domain ON alerts(domain_id);
+				CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts(enabled);
+
+				-- Webhook destinations (per domain). Signed with HMAC secret.
+				CREATE TABLE IF NOT EXISTS webhooks (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					secret VARCHAR NOT NULL,
+					events VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL,
+					last_fired_at BIGINT,
+					last_status INTEGER,
+					last_error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_webhooks_domain ON webhooks(domain_id);
+
+				-- History of fired alerts (for dedup + UI timeline)
+				CREATE TABLE IF NOT EXISTS alert_fires (
+					id VARCHAR PRIMARY KEY,
+					alert_id VARCHAR NOT NULL,
+					domain_id VARCHAR NOT NULL,
+					fired_at BIGINT NOT NULL,
+					metric_value DOUBLE NOT NULL,
+					threshold DOUBLE NOT NULL,
+					channels_sent VARCHAR NOT NULL DEFAULT '[]',
+					error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_alert ON alert_fires(alert_id, fired_at);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_domain ON alert_fires(domain_id, fired_at);
+			`,
+		},
+		{
+			version: 29,
+			sql: `
+				-- Goals: single conversion targets (pageview / custom event / outbound link)
+				CREATE TABLE IF NOT EXISTS goals (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					kind VARCHAR NOT NULL DEFAULT 'pageview',
+					match_value VARCHAR NOT NULL,
+					value_cents INTEGER NOT NULL DEFAULT 0,
+					currency VARCHAR NOT NULL DEFAULT 'USD',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_goals_domain ON goals(domain_id);
+			`,
+		},
+		{
+			version: 30,
+			sql: `
+				-- Saved cohorts: reusable filter definitions attachable to a domain.
+				-- "definition" is a JSON object: {utm_source, utm_medium, utm_campaign,
+				-- referrer_contains, path_contains, country}. All clauses AND-ed.
+				CREATE TABLE IF NOT EXISTS cohorts (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					description VARCHAR DEFAULT '',
+					definition VARCHAR NOT NULL DEFAULT '{}',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_cohorts_domain ON cohorts(domain_id);
+			`,
+		},
+		{
+			version: 31,
+			sql: `
+				-- SSO providers (admin-configured). Only OIDC is supported.
+				-- client_secret is encrypted at rest by the settings layer callers,
+				-- but stored plain here — treat this table as privileged.
+				CREATE TABLE IF NOT EXISTS sso_providers (
+					id VARCHAR PRIMARY KEY,
+					name VARCHAR NOT NULL,
+					kind VARCHAR NOT NULL DEFAULT 'oidc',
+					issuer VARCHAR NOT NULL,
+					client_id VARCHAR NOT NULL,
+					client_secret VARCHAR NOT NULL,
+					scopes VARCHAR NOT NULL DEFAULT 'openid email profile',
+					allowed_domains VARCHAR NOT NULL DEFAULT '',
+					default_role VARCHAR NOT NULL DEFAULT 'viewer',
+					enabled BOOLEAN NOT NULL DEFAULT true,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+
+				-- External identity bindings for users authenticated via SSO.
+				-- Tuple (provider_id, subject) uniquely identifies an external user.
+				CREATE TABLE IF NOT EXISTS user_identities (
+					id VARCHAR PRIMARY KEY,
+					user_id VARCHAR NOT NULL,
+					provider_id VARCHAR NOT NULL,
+					subject VARCHAR NOT NULL,
+					email VARCHAR,
+					created_at BIGINT NOT NULL,
+					UNIQUE (provider_id, subject)
+				);
+				CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
+			`,
+		},
+		{
+			// Corrective migration. During development these features briefly
+			// shared migration version 27 with the rollup engine, so databases
+			// that recorded version 27 as rollup_daily (or that ran an
+			// intermediate build) can be missing some of the feature tables even
+			// though a higher version is recorded. The runner only applies
+			// versions above the max recorded, so those tables would never
+			// appear. This re-runs every feature table's CREATE with IF NOT
+			// EXISTS: it repairs any affected database and is a no-op on healthy
+			// ones.
+			version: 32,
+			sql: `
+				CREATE TABLE IF NOT EXISTS alerts (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					metric VARCHAR NOT NULL,
+					comparator VARCHAR NOT NULL DEFAULT 'gt',
+					threshold DOUBLE NOT NULL,
+					window_minutes INTEGER NOT NULL DEFAULT 60,
+					cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+					channels VARCHAR NOT NULL DEFAULT '[]',
+					recipients VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_alerts_domain ON alerts(domain_id);
+				CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts(enabled);
+
+				CREATE TABLE IF NOT EXISTS webhooks (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					url VARCHAR NOT NULL,
+					secret VARCHAR NOT NULL,
+					events VARCHAR NOT NULL DEFAULT '[]',
+					enabled INTEGER NOT NULL DEFAULT 1,
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL,
+					last_fired_at BIGINT,
+					last_status INTEGER,
+					last_error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_webhooks_domain ON webhooks(domain_id);
+
+				CREATE TABLE IF NOT EXISTS alert_fires (
+					id VARCHAR PRIMARY KEY,
+					alert_id VARCHAR NOT NULL,
+					domain_id VARCHAR NOT NULL,
+					fired_at BIGINT NOT NULL,
+					metric_value DOUBLE NOT NULL,
+					threshold DOUBLE NOT NULL,
+					channels_sent VARCHAR NOT NULL DEFAULT '[]',
+					error VARCHAR
+				);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_alert ON alert_fires(alert_id, fired_at);
+				CREATE INDEX IF NOT EXISTS idx_alert_fires_domain ON alert_fires(domain_id, fired_at);
+
+				CREATE TABLE IF NOT EXISTS goals (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					kind VARCHAR NOT NULL DEFAULT 'pageview',
+					match_value VARCHAR NOT NULL,
+					value_cents INTEGER NOT NULL DEFAULT 0,
+					currency VARCHAR NOT NULL DEFAULT 'USD',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_goals_domain ON goals(domain_id);
+
+				CREATE TABLE IF NOT EXISTS cohorts (
+					id VARCHAR PRIMARY KEY,
+					domain_id VARCHAR NOT NULL,
+					name VARCHAR NOT NULL,
+					description VARCHAR DEFAULT '',
+					definition VARCHAR NOT NULL DEFAULT '{}',
+					created_by VARCHAR,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_cohorts_domain ON cohorts(domain_id);
+
+				CREATE TABLE IF NOT EXISTS sso_providers (
+					id VARCHAR PRIMARY KEY,
+					name VARCHAR NOT NULL,
+					kind VARCHAR NOT NULL DEFAULT 'oidc',
+					issuer VARCHAR NOT NULL,
+					client_id VARCHAR NOT NULL,
+					client_secret VARCHAR NOT NULL,
+					scopes VARCHAR NOT NULL DEFAULT 'openid email profile',
+					allowed_domains VARCHAR NOT NULL DEFAULT '',
+					default_role VARCHAR NOT NULL DEFAULT 'viewer',
+					enabled BOOLEAN NOT NULL DEFAULT true,
+					created_at BIGINT NOT NULL,
+					updated_at BIGINT NOT NULL
+				);
+
+				CREATE TABLE IF NOT EXISTS user_identities (
+					id VARCHAR PRIMARY KEY,
+					user_id VARCHAR NOT NULL,
+					provider_id VARCHAR NOT NULL,
+					subject VARCHAR NOT NULL,
+					email VARCHAR,
+					created_at BIGINT NOT NULL,
+					UNIQUE (provider_id, subject)
+				);
+				CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
+			`,
+		},
 	}
 
 	for _, m := range migrations {

@@ -1,0 +1,5 @@
+Subject: Etiquetta email test
+
+If you are reading this, your {{.Provider}} email provider is configured correctly.
+
+Sent at {{.SentAt}} from {{.From}}.

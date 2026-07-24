@@ -20,7 +20,7 @@ Etiquetta is a privacy-first, self-hosted web analytics platform. This plugin co
 * Dashboard widget showing visitors, pageviews, bounce rate, and top pages
 * Excludes logged-in admins from tracking
 * Respects `wp_get_environment_type()` — skip tracking in dev/staging
-* No cookies, no personal data collection, GDPR-friendly
+* Configurable visitor identification and consent controls
 * Proxies API requests through WordPress to avoid CORS issues
 
 **Requirements:**
@@ -44,7 +44,7 @@ Only for the dashboard widget. The tracker script works with just the server URL
 
 = Does this track personal data? =
 
-No. Etiquetta is designed to be privacy-first. It does not use cookies and does not collect personally identifiable information.
+That depends on the visitor-identification mode and features you configure. Cookieless mode avoids persistent browser storage, while other modes can use cookies or local storage. URLs, identifiers, events, and replay data may still be personal data, so configure consent and retention for your jurisdiction.
 
 = Can I exclude myself from tracking? =
 

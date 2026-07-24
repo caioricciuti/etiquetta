@@ -27,6 +27,19 @@ func (h *Handlers) ListConnections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list connections")
 		return
 	}
+	if allowedIDs, restricted := restrictedDomainIDs(r); restricted && domainID == "" {
+		allowed := make(map[string]struct{}, len(allowedIDs))
+		for _, id := range allowedIDs {
+			allowed[id] = struct{}{}
+		}
+		filtered := make([]connections.Connection, 0, len(conns))
+		for _, conn := range conns {
+			if _, ok := allowed[conn.DomainID]; ok {
+				filtered = append(filtered, conn)
+			}
+		}
+		conns = filtered
+	}
 	writeJSON(w, http.StatusOK, conns)
 }
 
@@ -221,18 +234,27 @@ func (h *Handlers) GetAdSpend(w http.ResponseWriter, r *http.Request) {
 	startDate := time.UnixMilli(f.startMs).Format("2006-01-02")
 	endDate := time.UnixMilli(f.endMs).Format("2006-01-02")
 
+	fromClause := "FROM ad_spend_daily s"
+	whereClause := "WHERE s.date >= ? AND s.date <= ?"
+	args := []any{startDate, endDate}
+	if f.domain != "" {
+		fromClause += " JOIN ad_connections c ON c.id = s.connection_id JOIN domains d ON d.id = c.domain_id"
+		whereClause += " AND d.domain = ?"
+		args = append(args, f.domain)
+	}
+
 	rows, err := h.db.Conn().QueryContext(r.Context(), `
 		SELECT
-			date,
-			provider,
-			SUM(cost_micros) as total_cost_micros,
-			SUM(impressions) as total_impressions,
-			SUM(clicks) as total_clicks
-		FROM ad_spend_daily
-		WHERE date >= ? AND date <= ?
-		GROUP BY date, provider
-		ORDER BY date
-	`, startDate, endDate)
+			s.date,
+			s.provider,
+			SUM(s.cost_micros) as total_cost_micros,
+			SUM(s.impressions) as total_impressions,
+			SUM(s.clicks) as total_clicks
+		`+fromClause+`
+		`+whereClause+`
+		GROUP BY s.date, s.provider
+		ORDER BY s.date
+	`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query ad spend")
 		return
@@ -273,6 +295,12 @@ func (h *Handlers) GetAdAttribution(w http.ResponseWriter, r *http.Request) {
 	endDate := time.UnixMilli(f.endMs).Format("2006-01-02")
 
 	where, args := f.where("e.timestamp >= ? AND e.timestamp <= ? AND e.is_bot = 0", f.startMs, f.endMs)
+	campaignSpendFrom := "ad_spend_daily s"
+	campaignSpendDomain := ""
+	if f.domain != "" {
+		campaignSpendFrom += " JOIN ad_connections c ON c.id = s.connection_id JOIN domains d ON d.id = c.domain_id"
+		campaignSpendDomain = " AND d.domain = ?"
+	}
 
 	// Join ad_spend_daily with events via UTM campaign matching
 	query := `
@@ -290,14 +318,14 @@ func (h *Handlers) GetAdAttribution(w http.ResponseWriter, r *http.Request) {
 		),
 		campaign_spend AS (
 			SELECT
-				campaign_name,
-				provider,
-				SUM(cost_micros) as total_cost_micros,
-				SUM(impressions) as total_impressions,
-				SUM(clicks) as total_clicks
-			FROM ad_spend_daily
-			WHERE date >= ? AND date <= ?
-			GROUP BY campaign_name, provider
+				s.campaign_name,
+				s.provider,
+				SUM(s.cost_micros) as total_cost_micros,
+				SUM(s.impressions) as total_impressions,
+				SUM(s.clicks) as total_clicks
+			FROM ` + campaignSpendFrom + `
+			WHERE s.date >= ? AND s.date <= ?` + campaignSpendDomain + `
+			GROUP BY s.campaign_name, s.provider
 		)
 		SELECT
 			COALESCE(ct.utm_campaign, cs.campaign_name) as campaign,
@@ -315,6 +343,9 @@ func (h *Handlers) GetAdAttribution(w http.ResponseWriter, r *http.Request) {
 	`
 
 	args = append(args, startDate, endDate)
+	if f.domain != "" {
+		args = append(args, f.domain)
+	}
 
 	rows, err := h.db.Conn().QueryContext(r.Context(), query, args...)
 	if err != nil {

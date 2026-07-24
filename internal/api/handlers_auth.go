@@ -3,10 +3,16 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/caioricciuti/etiquetta/internal/auth"
 )
+
+// DuckDB allows concurrent HTTP requests, but initial setup must have exactly
+// one winner. Etiquetta runs as a single process against its database, so this
+// lock closes the check-then-insert race without changing existing data.
+var initialSetupMu sync.Mutex
 
 // CheckSetup returns whether initial setup is complete
 func (h *Handlers) CheckSetup(w http.ResponseWriter, r *http.Request) {
@@ -23,9 +29,15 @@ func (h *Handlers) CheckSetup(w http.ResponseWriter, r *http.Request) {
 
 // Setup creates the initial admin user
 func (h *Handlers) Setup(w http.ResponseWriter, r *http.Request) {
+	initialSetupMu.Lock()
+	defer initialSetupMu.Unlock()
+
 	// Check if setup is already complete
 	var count int
-	h.db.Conn().QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&count)
+	if err := h.db.Conn().QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to check setup status")
+		return
+	}
 	if count > 0 {
 		writeError(w, http.StatusBadRequest, "Setup already complete")
 		return
@@ -59,11 +71,19 @@ func (h *Handlers) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create admin user
+	// Create the admin and setup marker atomically. A failed write cannot leave
+	// setup half-complete.
 	id := auth.GenerateID()
 	now := time.Now().UnixMilli()
 
-	_, err = h.db.Conn().Exec(
+	tx, err := h.db.Conn().Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to start setup")
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
 		"INSERT INTO users (id, email, password_hash, name, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'admin', ?, ?)",
 		id, input.Email, passwordHash, input.Name, now, now,
 	)
@@ -72,11 +92,17 @@ func (h *Handlers) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark setup as complete
-	h.db.Conn().Exec(
-		"UPDATE settings SET value = 'true', updated_at = ? WHERE key = 'setup_complete'",
-		now,
-	)
+	if _, err = tx.Exec(`
+		INSERT INTO settings (key, value, updated_at) VALUES ('setup_complete', 'true', ?)
+		ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = excluded.updated_at
+	`, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to complete setup")
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to complete setup")
+		return
+	}
 
 	// Generate token and set cookie
 	user := &auth.User{

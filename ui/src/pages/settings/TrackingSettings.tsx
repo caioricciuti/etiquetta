@@ -179,8 +179,9 @@ export function TrackingSettings() {
               </Label>
               <p className="text-xs text-muted-foreground">
                 How visitors are identified across page views.
-                Cookieless uses no storage and is fully GDPR-compliant without consent.
-                Cookie and Local Storage enable cross-session identification but may require consent.
+                Cookieless uses no persistent browser storage, but may still require consent or another
+                legal basis depending on your jurisdiction and configuration. Cookie and Local Storage
+                enable cross-session identification and commonly require consent.
               </p>
             </div>
             <Select

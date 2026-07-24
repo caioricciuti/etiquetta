@@ -1,0 +1,6 @@
+{
+  "name": "@etiquetta/sdks",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "workspaces": ["node", "next"]
+}

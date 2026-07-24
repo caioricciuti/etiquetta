@@ -1,12 +1,13 @@
 /**
  * Etiquetta Consent Manager
- * Privacy-first consent banner for GDPR compliance.
+ * Consent controls for Etiquetta analytics and Tag Manager.
  */
 (function() {
   "use strict";
 
   if (window.__ETIQUETTA_CONSENT_LOADED__) return;
   window.__ETIQUETTA_CONSENT_LOADED__ = true;
+  window.__ETIQUETTA_CONSENT_STATUS__ = 'loading';
 
   // Get script config
   function getScript() {
@@ -22,7 +23,10 @@
   }
 
   var SCRIPT = getScript();
-  if (!SCRIPT.siteId) return;
+  if (!SCRIPT.siteId) {
+    signalConsentReady('error');
+    return;
+  }
 
   var BASE_URL = SCRIPT.baseUrl;
   var SITE_ID = SCRIPT.siteId;
@@ -37,7 +41,7 @@
   function setCookie(name, value, days) {
     var d = new Date();
     d.setTime(d.getTime() + days * 86400000);
-    document.cookie = name + '=' + value + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
+    document.cookie = name + '=' + value + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax' + (location.protocol === 'https:' ? ';Secure' : '');
   }
 
   function parseConsent(raw) {
@@ -65,30 +69,60 @@
     }
   }
 
-  // If valid consent cookie exists, apply it and check version
-  if (parsed && parsed.c) {
-    setConsentState(parsed.c);
-    // We'll check version after fetching config
+  function setConsentStatus(status) {
+    window.__ETIQUETTA_CONSENT_STATUS__ = status;
+  }
+
+  function signalConsentReady(status) {
+    setConsentStatus(status);
+    try {
+      window.dispatchEvent(new CustomEvent('etiquetta:consent-ready', { detail: { status: status } }));
+    } catch(e) {
+      var evt = document.createEvent('CustomEvent');
+      evt.initCustomEvent('etiquetta:consent-ready', true, true, { status: status });
+      window.dispatchEvent(evt);
+    }
   }
 
   // Fetch config
   function fetchConfig(callback) {
     var xhr = new XMLHttpRequest();
+    var completed = false;
+
+    function finish(config, status) {
+      if (completed) return;
+      completed = true;
+      callback(config, status);
+    }
+
     xhr.open('GET', BASE_URL + '/consent/' + SITE_ID + '/config', true);
+    xhr.timeout = 10000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState === 4) {
         if (xhr.status === 200) {
           try {
-            callback(JSON.parse(xhr.responseText));
+            finish(JSON.parse(xhr.responseText), 'configured');
           } catch(e) {
-            callback(null);
+            finish(null, 'error');
           }
+        } else if (xhr.status === 204) {
+          finish(null, 'unconfigured');
         } else {
-          callback(null); // 404 = consent not configured, exit silently
+          finish(null, 'error');
         }
       }
     };
+    xhr.onerror = function() { finish(null, 'error'); };
+    xhr.ontimeout = function() { finish(null, 'error'); };
     xhr.send();
+  }
+
+  function defaultConsent(categories) {
+    var defaults = {};
+    for (var i = 0; i < categories.length; i++) {
+      defaults[categories[i].id] = categories[i].required === true;
+    }
+    return defaults;
   }
 
   function recordConsent(action, categories, configVersion) {
@@ -123,6 +157,13 @@
     return lang;
   }
 
+  // Escape untrusted strings before inserting into HTML (text or attributes)
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
   // Get translated text
   function t(config, key, lang) {
     if (config.translations && config.translations[lang] && config.translations[lang][key]) {
@@ -131,7 +172,7 @@
     // Defaults
     var defaults = {
       title: 'Cookie Consent',
-      description: 'We use cookies to enhance your experience. By continuing to visit this site you agree to our use of cookies.',
+      description: 'We use optional analytics and other technologies based on your choices. You can accept, reject, or customize them.',
       accept_all: 'Accept All',
       reject_all: 'Reject All',
       customize: 'Customize',
@@ -146,10 +187,10 @@
     var app = config.appearance || {};
     var style = app.style || 'bar'; // bar, popup, modal
     var position = app.position || 'bottom'; // top, bottom, bottom-left, bottom-right, center
-    var bgColor = app.bg_color || '#ffffff';
-    var textColor = app.text_color || '#1a1a1a';
-    var btnBgColor = app.btn_bg_color || '#000000';
-    var btnTextColor = app.btn_text_color || '#ffffff';
+    var bgColor = esc(app.bg_color || '#ffffff');
+    var textColor = esc(app.text_color || '#1a1a1a');
+    var btnBgColor = esc(app.btn_bg_color || '#000000');
+    var btnTextColor = esc(app.btn_text_color || '#ffffff');
     var showRejectAll = app.show_reject_all !== false;
     var showCustomize = (config.categories || []).length > 1;
     var lang = config.auto_language ? detectLang() : 'en';
@@ -190,37 +231,40 @@
 
     // Main view
     var mainHTML = '<div style="flex:1;min-width:200px;">';
-    mainHTML += '<strong style="display:block;margin-bottom:4px;">' + t(config, 'title', lang) + '</strong>';
-    mainHTML += '<p style="margin:0;opacity:0.8;font-size:13px;">' + t(config, 'description', lang) + '</p>';
+    mainHTML += '<strong style="display:block;margin-bottom:4px;">' + esc(t(config, 'title', lang)) + '</strong>';
+    mainHTML += '<p style="margin:0;opacity:0.8;font-size:13px;">' + esc(t(config, 'description', lang)) + '</p>';
     mainHTML += '</div>';
     mainHTML += '<div style="display:flex;gap:8px;flex-wrap:wrap;' + (style !== 'bar' ? 'margin-top:16px;' : '') + '">';
     if (showRejectAll) {
-      mainHTML += '<button data-action="reject" style="padding:8px 20px;border-radius:6px;border:1px solid ' + textColor + ';background:transparent;color:' + textColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + t(config, 'reject_all', lang) + '</button>';
+      mainHTML += '<button data-action="reject" style="padding:8px 20px;border-radius:6px;border:1px solid ' + textColor + ';background:transparent;color:' + textColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + esc(t(config, 'reject_all', lang)) + '</button>';
     }
     if (showCustomize) {
-      mainHTML += '<button data-action="customize" style="padding:8px 20px;border-radius:6px;border:1px solid ' + textColor + ';background:transparent;color:' + textColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + t(config, 'customize', lang) + '</button>';
+      mainHTML += '<button data-action="customize" style="padding:8px 20px;border-radius:6px;border:1px solid ' + textColor + ';background:transparent;color:' + textColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + esc(t(config, 'customize', lang)) + '</button>';
     }
-    mainHTML += '<button data-action="accept" style="padding:8px 20px;border-radius:6px;border:none;background:' + btnBgColor + ';color:' + btnTextColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + t(config, 'accept_all', lang) + '</button>';
+    mainHTML += '<button data-action="accept" style="padding:8px 20px;border-radius:6px;border:none;background:' + btnBgColor + ';color:' + btnTextColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + esc(t(config, 'accept_all', lang)) + '</button>';
     mainHTML += '</div>';
 
-    // Customize view
+    // Customize view — checkboxes reflect the actual current consent state,
+    // not the config's default_enabled flags.
+    var currentConsent = window.__ETIQUETTA_CONSENT__ || defaultConsent(categories);
     var customizeHTML = '<div style="display:none;" data-view="customize">';
-    customizeHTML += '<strong style="display:block;margin-bottom:12px;">' + t(config, 'title', lang) + '</strong>';
+    customizeHTML += '<strong style="display:block;margin-bottom:12px;">' + esc(t(config, 'title', lang)) + '</strong>';
     for (var i = 0; i < categories.length; i++) {
       var cat = categories[i];
       var isRequired = cat.required === true;
+      var isGranted = isRequired || currentConsent[cat.id] === true;
       customizeHTML += '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,0.1);">';
-      customizeHTML += '<div><strong style="font-size:13px;">' + (cat.label || cat.id) + '</strong>';
-      if (cat.description) customizeHTML += '<p style="margin:2px 0 0;font-size:12px;opacity:0.7;">' + cat.description + '</p>';
+      customizeHTML += '<div><strong style="font-size:13px;">' + esc(cat.label || cat.id) + '</strong>';
+      if (cat.description) customizeHTML += '<p style="margin:2px 0 0;font-size:12px;opacity:0.7;">' + esc(cat.description) + '</p>';
       customizeHTML += '</div>';
       customizeHTML += '<label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;margin-left:12px;">';
-      customizeHTML += '<input type="checkbox" data-cat="' + cat.id + '"' + (isRequired || cat.default_enabled !== false ? ' checked' : '') + (isRequired ? ' disabled' : '') + ' style="opacity:0;width:0;height:0;">';
-      customizeHTML += '<span style="position:absolute;cursor:' + (isRequired ? 'not-allowed' : 'pointer') + ';top:0;left:0;right:0;bottom:0;background:' + (isRequired || cat.default_enabled !== false ? btnBgColor : '#ccc') + ';border-radius:24px;transition:0.3s;"></span>';
-      customizeHTML += '<span style="position:absolute;content:\'\';height:18px;width:18px;left:' + (isRequired || cat.default_enabled !== false ? '22px' : '3px') + ';bottom:3px;background:white;border-radius:50%;transition:0.3s;"></span>';
+      customizeHTML += '<input type="checkbox" data-cat="' + esc(cat.id) + '"' + (isGranted ? ' checked' : '') + (isRequired ? ' disabled' : '') + ' style="opacity:0;width:0;height:0;">';
+      customizeHTML += '<span style="position:absolute;cursor:' + (isRequired ? 'not-allowed' : 'pointer') + ';top:0;left:0;right:0;bottom:0;background:' + (isGranted ? btnBgColor : '#ccc') + ';border-radius:24px;transition:0.3s;"></span>';
+      customizeHTML += '<span style="position:absolute;content:\'\';height:18px;width:18px;left:' + (isGranted ? '22px' : '3px') + ';bottom:3px;background:white;border-radius:50%;transition:0.3s;"></span>';
       customizeHTML += '</label></div>';
     }
     customizeHTML += '<div style="display:flex;gap:8px;margin-top:16px;">';
-    customizeHTML += '<button data-action="save" style="flex:1;padding:8px 20px;border-radius:6px;border:none;background:' + btnBgColor + ';color:' + btnTextColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + t(config, 'save_preferences', lang) + '</button>';
+    customizeHTML += '<button data-action="save" style="flex:1;padding:8px 20px;border-radius:6px;border:none;background:' + btnBgColor + ';color:' + btnTextColor + ';cursor:pointer;font-size:14px;font-weight:500;">' + esc(t(config, 'save_preferences', lang)) + '</button>';
     customizeHTML += '</div></div>';
 
     card.innerHTML = '<div data-view="main">' + mainHTML + '</div>' + customizeHTML;
@@ -303,8 +347,14 @@
   }
 
   // Main flow
-  fetchConfig(function(config) {
-    if (!config) return; // No consent configured, exit silently
+  fetchConfig(function(config, status) {
+    if (!config) {
+      // A deliberate 204 means consent management is disabled. Network,
+      // server, and parse failures stay fail-closed instead of being mistaken
+      // for an absent configuration.
+      signalConsentReady(status);
+      return;
+    }
 
     // Update cookie name from config
     if (config.cookie_name) cookieName = config.cookie_name + '_' + SITE_ID;
@@ -315,13 +365,22 @@
 
     if (parsed && parsed.c) {
       // Check if re-consent needed (version mismatch)
-      if (parsed.v >= (config.version || 1)) {
+      if (parsed.v === (config.version || 1)) {
         // Consent is valid and current
+        setConsentStatus('configured');
         setConsentState(parsed.c);
+        signalConsentReady('configured');
         return;
       }
       // Version changed, need re-consent — fall through to show banner
     }
+
+    // Until the visitor makes a choice, required categories may run and every
+    // optional category is denied. This state is published before the banner
+    // is rendered so analytics and Tag Manager cannot race the UI.
+    setConsentStatus('configured');
+    setConsentState(defaultConsent(config.categories || []));
+    signalConsentReady('configured');
 
     // Show banner and record the impression
     function showBanner(cfg) {

@@ -19,11 +19,11 @@ var replayStore *replay.Store
 // POST /r
 func (h *Handlers) IngestReplay(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		SessionID   string             `json:"session_id"`
-		Domain      string             `json:"domain"`
-		VisitorHash string             `json:"visitor_hash"`
-		Events      []json.RawMessage  `json:"events"`
-		Meta        *replayMeta        `json:"meta,omitempty"`
+		SessionID   string            `json:"session_id"`
+		Domain      string            `json:"domain"`
+		VisitorHash string            `json:"visitor_hash"`
+		Events      []json.RawMessage `json:"events"`
+		Meta        *replayMeta       `json:"meta,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -33,6 +33,10 @@ func (h *Handlers) IngestReplay(w http.ResponseWriter, r *http.Request) {
 
 	if payload.SessionID == "" || payload.Domain == "" || len(payload.Events) == 0 {
 		http.Error(w, `{"error":"missing session_id, domain, or events"}`, http.StatusBadRequest)
+		return
+	}
+	if err := replay.ValidateIdentifiers(payload.Domain, payload.SessionID); err != nil {
+		http.Error(w, `{"error":"invalid session_id or domain"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -127,6 +131,9 @@ func (h *Handlers) ListReplays(w http.ResponseWriter, r *http.Request) {
 	if domain != "" {
 		where += " AND domain = ?"
 		args = append(args, domain)
+	} else if domainNames, restricted := restrictedDomainNames(r); restricted {
+		where += " AND domain IN (" + sqlPlaceholders(len(domainNames)) + ")"
+		args = append(args, stringsToAny(domainNames)...)
 	}
 	if from != "" {
 		if ts, err := strconv.ParseInt(from, 10, 64); err == nil {
@@ -209,23 +216,23 @@ func (h *Handlers) ListReplays(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionRecording struct {
-	SessionID   string `json:"session_id"`
-	Domain      string `json:"domain"`
-	VisitorHash string `json:"visitor_hash"`
-	StartTime   int64  `json:"start_time"`
-	Duration    int64  `json:"duration"`
-	Pages       int    `json:"pages"`
-	FirstURL    string `json:"first_url"`
-	DeviceType  string `json:"device_type"`
-	BrowserName string `json:"browser_name"`
-	OSName      string `json:"os_name"`
-	GeoCountry  string `json:"geo_country"`
-	ScreenWidth int    `json:"screen_width"`
-	ScreenHeight int   `json:"screen_height"`
-	SizeBytes   int64  `json:"size_bytes"`
-	EventsCount int    `json:"events_count"`
-	Status      string `json:"status"`
-	CreatedAt   int64  `json:"created_at"`
+	SessionID    string `json:"session_id"`
+	Domain       string `json:"domain"`
+	VisitorHash  string `json:"visitor_hash"`
+	StartTime    int64  `json:"start_time"`
+	Duration     int64  `json:"duration"`
+	Pages        int    `json:"pages"`
+	FirstURL     string `json:"first_url"`
+	DeviceType   string `json:"device_type"`
+	BrowserName  string `json:"browser_name"`
+	OSName       string `json:"os_name"`
+	GeoCountry   string `json:"geo_country"`
+	ScreenWidth  int    `json:"screen_width"`
+	ScreenHeight int    `json:"screen_height"`
+	SizeBytes    int64  `json:"size_bytes"`
+	EventsCount  int    `json:"events_count"`
+	Status       string `json:"status"`
+	CreatedAt    int64  `json:"created_at"`
 }
 
 // GetReplay returns rrweb events for playback.
@@ -283,14 +290,19 @@ type sessionEvent struct {
 // GET /api/replays/{sessionId}/events
 func (h *Handlers) GetSessionEvents(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
+	var domain string
+	if err := h.db.Conn().QueryRow("SELECT domain FROM session_recordings WHERE session_id = ?", sessionID).Scan(&domain); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
+		return
+	}
 
 	rows, err := h.db.Conn().Query(`SELECT id, timestamp, event_type,
 		COALESCE(event_name, ''), url, path,
 		COALESCE(page_title, ''), COALESCE(referrer_url, ''),
 		COALESCE(utm_source, ''), COALESCE(utm_medium, ''),
 		COALESCE(utm_campaign, ''), COALESCE(props, '{}')
-		FROM events WHERE session_id = ?
-		ORDER BY timestamp ASC LIMIT 500`, sessionID)
+		FROM events WHERE session_id = ? AND domain = ?
+		ORDER BY timestamp ASC LIMIT 500`, sessionID, domain)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -375,9 +387,19 @@ func (h *Handlers) DeleteReplaysBatch(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetReplayStats(w http.ResponseWriter, r *http.Request) {
 	var totalRecordings int
 	var totalSizeBytes int64
-	h.db.Conn().QueryRow("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM session_recordings").Scan(&totalRecordings, &totalSizeBytes)
+	query := "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM session_recordings"
+	var args []any
+	domainNames, restricted := restrictedDomainNames(r)
+	if restricted {
+		query += " WHERE domain IN (" + sqlPlaceholders(len(domainNames)) + ")"
+		args = stringsToAny(domainNames)
+	}
+	h.db.Conn().QueryRow(query, args...).Scan(&totalRecordings, &totalSizeBytes)
 
-	diskUsage, _ := replayStore.DiskUsageBytes()
+	diskUsage := totalSizeBytes
+	if !restricted {
+		diskUsage, _ = replayStore.DiskUsageBytes()
+	}
 	quotaMB := h.getTrackingInt("replay_storage_quota_mb", 5120)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

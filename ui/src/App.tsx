@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
+import type { ComponentType } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
@@ -6,36 +7,6 @@ import { fetchAPI } from './lib/api'
 import { queryClient } from './lib/query-client'
 import { AuthProvider, useAuth } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './components/theme/theme-provider'
-import { Dashboard } from './components/dashboard/Dashboard'
-import { LicenseSettings } from './components/LicenseSettings'
-import {
-  DomainsSettings,
-  EmailSettings,
-  GeoIPSettings,
-  AccountSettings,
-  UsersSettings,
-  TrackingSettings,
-  ConnectionsSettings,
-  ApiKeysSettings,
-} from './pages/settings'
-import { ConsentDashboard, ConsentConfig } from './pages/consent'
-import { PrivacyCenter } from './pages/privacy'
-import { TagManager, TagManagerContainer } from './pages/tag-manager'
-import { Migrate } from './pages/migrate'
-import { Explorer } from './pages/Explorer'
-import { Login } from './pages/Login'
-import { BotAnalysis } from './pages/BotAnalysis'
-import { Events } from './pages/Events'
-import { Compare } from './pages/Compare'
-import { Connections } from './pages/Connections'
-import { AdFraud } from './pages/AdFraud'
-import { Errors } from './pages/Errors'
-import { ReplayList, ReplayPlayer, ReplaySettings } from './pages/replays'
-import { Funnels } from './pages/Funnels'
-import { Heatmaps } from './pages/Heatmaps'
-import { InstallCheck } from './pages/InstallCheck'
-import { Live } from './pages/Live'
-import { SharedDashboard } from './pages/SharedDashboard'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
 import {
@@ -71,6 +42,10 @@ import {
   Flame,
   PlugZap,
   Radio,
+  Bell,
+  Target,
+  LineChart,
+  Layers,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -105,6 +80,61 @@ import {
   useSidebar,
 } from './components/ui/sidebar'
 import './index.css'
+
+const lazyNamed = (loader: () => Promise<unknown>, exportName: string) =>
+  lazy(async () => {
+    const module = await loader() as Record<string, ComponentType>
+    return { default: module[exportName] }
+  })
+
+// The authenticated dashboard is highly interactive, so React remains the
+// right runtime. Route-level chunks avoid paying for every analytics/editor
+// screen on the initial login or dashboard load.
+const Dashboard = lazyNamed(() => import('./components/dashboard/Dashboard'), 'Dashboard')
+const LicenseSettings = lazyNamed(() => import('./components/LicenseSettings'), 'LicenseSettings')
+const DomainsSettings = lazyNamed(() => import('./pages/settings/DomainsSettings'), 'DomainsSettings')
+const EmailSettings = lazyNamed(() => import('./pages/settings/EmailSettings'), 'EmailSettings')
+const GeoIPSettings = lazyNamed(() => import('./pages/settings/GeoIPSettings'), 'GeoIPSettings')
+const AccountSettings = lazyNamed(() => import('./pages/settings/AccountSettings'), 'AccountSettings')
+const UsersSettings = lazyNamed(() => import('./pages/settings/UsersSettings'), 'UsersSettings')
+const TrackingSettings = lazyNamed(() => import('./pages/settings/TrackingSettings'), 'TrackingSettings')
+const ConnectionsSettings = lazyNamed(() => import('./pages/settings/ConnectionsSettings'), 'ConnectionsSettings')
+const ApiKeysSettings = lazyNamed(() => import('./pages/settings/ApiKeysSettings'), 'ApiKeysSettings')
+const SSOSettings = lazyNamed(() => import('./pages/settings/SSOSettings'), 'SSOSettings')
+const ConsentDashboard = lazyNamed(() => import('./pages/consent/ConsentDashboard'), 'ConsentDashboard')
+const ConsentConfig = lazyNamed(() => import('./pages/consent/ConsentConfig'), 'ConsentConfig')
+const PrivacyCenter = lazyNamed(() => import('./pages/privacy/PrivacyCenter'), 'PrivacyCenter')
+const TagManager = lazyNamed(() => import('./pages/tag-manager/TagManager'), 'TagManager')
+const TagManagerContainer = lazyNamed(() => import('./pages/tag-manager/TagManagerContainer'), 'TagManagerContainer')
+const Migrate = lazyNamed(() => import('./pages/migrate/Migrate'), 'Migrate')
+const Explorer = lazyNamed(() => import('./pages/Explorer'), 'Explorer')
+const Login = lazyNamed(() => import('./pages/Login'), 'Login')
+const BotAnalysis = lazyNamed(() => import('./pages/BotAnalysis'), 'BotAnalysis')
+const Events = lazyNamed(() => import('./pages/Events'), 'Events')
+const Compare = lazyNamed(() => import('./pages/Compare'), 'Compare')
+const Connections = lazyNamed(() => import('./pages/Connections'), 'Connections')
+const AdFraud = lazyNamed(() => import('./pages/AdFraud'), 'AdFraud')
+const Errors = lazyNamed(() => import('./pages/Errors'), 'Errors')
+const ReplayList = lazyNamed(() => import('./pages/replays/ReplayList'), 'ReplayList')
+const ReplayPlayer = lazyNamed(() => import('./pages/replays/ReplayPlayer'), 'ReplayPlayer')
+const ReplaySettings = lazyNamed(() => import('./pages/replays/ReplaySettings'), 'ReplaySettings')
+const Funnels = lazyNamed(() => import('./pages/Funnels'), 'Funnels')
+const Goals = lazyNamed(() => import('./pages/Goals'), 'Goals')
+const Alerts = lazyNamed(() => import('./pages/Alerts'), 'Alerts')
+const Retention = lazyNamed(() => import('./pages/Retention'), 'Retention')
+const Cohorts = lazyNamed(() => import('./pages/Cohorts'), 'Cohorts')
+const SharedDashboard = lazyNamed(() => import('./pages/SharedDashboard'), 'SharedDashboard')
+const Live = lazyNamed(() => import('./pages/Live'), 'Live')
+const Heatmaps = lazyNamed(() => import('./pages/Heatmaps'), 'Heatmaps')
+const InstallCheck = lazyNamed(() => import('./pages/InstallCheck'), 'InstallCheck')
+
+function RouteFallback() {
+  return (
+    <div className="min-h-48 flex items-center justify-center bg-background">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+    </div>
+  )
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading, setupRequired } = useAuth()
@@ -267,6 +297,10 @@ function AppSidebar() {
     { path: '/compare', name: 'Compare', icon: GitCompareArrows },
     { path: '/events', name: 'Events', icon: Zap },
     { path: '/funnels', name: 'Funnels', icon: GitMerge, pro: 'funnels' },
+    { path: '/goals', name: 'Goals', icon: Target, pro: 'funnels' },
+    { path: '/cohorts', name: 'Cohorts', icon: Layers, pro: 'funnels' },
+    { path: '/retention', name: 'Retention', icon: LineChart, pro: 'funnels' },
+    { path: '/alerts', name: 'Alerts', icon: Bell, pro: 'alerts' },
     { path: '/errors', name: 'Errors', icon: AlertTriangle, pro: 'error_tracking' },
     { path: '/replays', name: 'Session Replay', icon: Video, pro: 'session_replay' },
     { path: '/heatmaps', name: 'Heatmaps', icon: Flame },
@@ -295,7 +329,8 @@ function AppSidebar() {
       items: [
         { path: '/settings/email', name: 'Email', icon: Mail, adminOnly: true },
         { path: '/settings/geoip', name: 'GeoIP', icon: MapPin, adminOnly: true },
-        { path: '/settings/license', name: 'License', icon: Key },
+        { path: '/settings/sso', name: 'SSO', icon: Shield, adminOnly: true, pro: 'sso' },
+        { path: '/settings/license', name: 'License', icon: Key, adminOnly: true },
       ],
     },
     {
@@ -446,7 +481,8 @@ function AppLayout() {
         </header>
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <div className="max-w-[1800px] mx-auto w-full h-full overflow-hidden">
-            <Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/live" element={<Live />} />
               <Route path="/compare" element={<Compare />} />
@@ -454,6 +490,10 @@ function AppLayout() {
               <Route path="/errors" element={<Errors />} />
               <Route path="/funnels" element={<Funnels />} />
               <Route path="/heatmaps" element={<Heatmaps />} />
+              <Route path="/goals" element={<Goals />} />
+              <Route path="/cohorts" element={<Cohorts />} />
+              <Route path="/retention" element={<Retention />} />
+              <Route path="/alerts" element={<Alerts />} />
               <Route path="/bots" element={<BotAnalysis />} />
               <Route path="/replays" element={<ReplayList />} />
               <Route path="/replays/settings" element={<ReplaySettings />} />
@@ -470,6 +510,7 @@ function AppLayout() {
               <Route path="/settings/tracking" element={<TrackingSettings />} />
               <Route path="/settings/email" element={<EmailSettings />} />
               <Route path="/settings/geoip" element={<GeoIPSettings />} />
+              <Route path="/settings/sso" element={<SSOSettings />} />
               <Route path="/settings/connections" element={<ConnectionsSettings />} />
               <Route path="/settings/api-keys" element={<ApiKeysSettings />} />
               <Route path="/settings/account" element={<AccountSettings />} />
@@ -489,7 +530,8 @@ function AppLayout() {
                   <LicenseSettings />
                 </div>
               } />
-            </Routes>
+              </Routes>
+            </Suspense>
           </div>
         </main>
       </SidebarInset>
@@ -503,7 +545,8 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AuthProvider>
-            <Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
               <Route path="/login" element={
                 <PublicRoute>
                   <Login />
@@ -515,7 +558,8 @@ function App() {
                   <AppLayout />
                 </ProtectedRoute>
               } />
-            </Routes>
+              </Routes>
+            </Suspense>
           </AuthProvider>
         </BrowserRouter>
         <Toaster richColors position="bottom-right" />

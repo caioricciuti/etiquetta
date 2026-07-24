@@ -128,7 +128,7 @@
   function setCookie(name, value, days) {
     var d = new Date();
     d.setTime(d.getTime() + days * 864e5);
-    document.cookie = name + "=" + encodeURIComponent(value) + ";expires=" + d.toUTCString() + ";path=/;SameSite=Lax";
+    document.cookie = name + "=" + encodeURIComponent(value) + ";expires=" + d.toUTCString() + ";path=/;SameSite=Lax" + (location.protocol === "https:" ? ";Secure" : "");
   }
 
   function deleteCookie(name) {
@@ -160,7 +160,9 @@
     return getVisitorHash();
   }
 
-  var VISITOR_HASH = getOrCreateVisitorId();
+  // Persistent identifiers must not be created before consent has been
+  // resolved. They are initialized lazily by startTracking().
+  var VISITOR_HASH = null;
 
   // Bot detection signals (weight checks)
   function getBotSignals() {
@@ -199,6 +201,7 @@
   }
 
   function queueEvent(type, data) {
+    if (!analyticsConsentAllowsTracking()) return;
     if (!checkRateLimit()) return;
     queue.push({ type, data, ts: Date.now() });
     if (queue.length >= MAX_BATCH) {
@@ -225,6 +228,7 @@
   }
 
   function sendBlob(blob, type) {
+    if (!analyticsConsentAllowsTracking()) return;
     if (navigator.sendBeacon) {
       navigator.sendBeacon(INGEST_URL, new Blob([blob], { type: type }));
     } else {
@@ -241,6 +245,10 @@
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
+    }
+    if (!analyticsConsentAllowsTracking()) {
+      queue = [];
+      return;
     }
     if (!queue.length) return;
 
@@ -594,11 +602,69 @@
     track: track,
     pageview: trackPageview,
     flush: flush,
-    getVisitorHash: () => VISITOR_HASH
+    getVisitorHash: () => VISITOR_HASH || ""
   };
 
   // Init
+  var trackingStarted = false;
+  var waitingForConsent = false;
+
+  function analyticsConsentAllowsTracking() {
+    var status = window.__ETIQUETTA_CONSENT_STATUS__;
+    var consent = window.__ETIQUETTA_CONSENT__;
+
+    // An active configuration, a pending lookup, or a failed lookup requires
+    // an affirmative, current analytics decision. A deliberate "unconfigured"
+    // result or an unreachable consent script ("unavailable") retains the
+    // legacy no-banner behavior.
+    if (status === "configured") {
+      if (!consent) return false;
+      // A config without an "analytics" category isn't asking for analytics
+      // consent — only an explicit false blocks.
+      return consent.analytics !== false;
+    }
+    if (status === "loading" || status === "error") return false;
+    return !(consent && consent.analytics === false);
+  }
+
+  function clearQueuedEvents() {
+    queue = [];
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  }
+
+  function clearVisitorIdentity() {
+    deleteCookie(VID_KEY);
+    try { localStorage.removeItem(VID_KEY); } catch(e) {}
+    VISITOR_HASH = null;
+  }
+
+  function handleConsentChange() {
+    if (!analyticsConsentAllowsTracking()) {
+      clearQueuedEvents();
+      // Only wipe identity on an explicit denial, never on transient
+      // loading/error/unavailable states.
+      var consent = window.__ETIQUETTA_CONSENT__;
+      if (consent && consent.analytics === false) clearVisitorIdentity();
+      return;
+    }
+    if (trackingStarted && !VISITOR_HASH) VISITOR_HASH = getOrCreateVisitorId();
+    init();
+  }
+
+  function waitForConsent() {
+    if (waitingForConsent) return;
+    waitingForConsent = true;
+    window.addEventListener("etiquetta:consent", handleConsentChange);
+    window.addEventListener("etiquetta:consent-ready", handleConsentChange);
+  }
+
   function startTracking() {
+    if (trackingStarted || !analyticsConsentAllowsTracking()) return;
+    trackingStarted = true;
+    VISITOR_HASH = getOrCreateVisitorId();
     log("Etiquetta v2.0 initializing");
     setupBehavior();
     setupSPA();
@@ -639,30 +705,26 @@
       }
     }
 
-    var consent = window.__ETIQUETTA_CONSENT__;
-
-    // If consent system is loaded and analytics is explicitly denied, wait
-    if (consent && consent.analytics === false) {
+    if (!analyticsConsentAllowsTracking()) {
       log("Analytics consent not granted, waiting...");
-      window.addEventListener("etiquetta:consent", function handler(e) {
-        var c = window.__ETIQUETTA_CONSENT__;
-        if (c && c.analytics !== false) {
-          window.removeEventListener("etiquetta:consent", handler);
-          startTracking();
-        }
-      });
+      waitForConsent();
       return;
     }
 
     // Defer tracking if page is prerendering (Speculation Rules API)
     if (document.prerendering) {
       log("Page is prerendering, deferring tracking");
-      document.addEventListener("prerenderingchange", function() { startTracking(); }, { once: true });
+      document.addEventListener("prerenderingchange", init, { once: true });
       return;
     }
 
-    // Either consent granted or no consent system loaded (backwards compatible)
     startTracking();
+  }
+
+  // The consent script is loaded asynchronously below. Mark the lookup as
+  // pending before init so pageviews and persistent IDs cannot race c.js.
+  if (SITE_ID && !window.__ETIQUETTA_CONSENT_LOADED__ && !window.__ETIQUETTA_CONSENT_STATUS__) {
+    window.__ETIQUETTA_CONSENT_STATUS__ = "loading";
   }
 
   init();
@@ -671,11 +733,31 @@
   // Only tracker script tag is required; consent (c.js), tag manager (tm/{siteId}.js),
   // and recorder (r.js) are injected automatically. All handle 404s gracefully.
   if (SITE_ID) {
+    var recorderLoaded = false;
+
     function loadRecorder() {
+      if (recorderLoaded || !analyticsConsentAllowsTracking()) return;
+      recorderLoaded = true;
       var rs = document.createElement('script');
       rs.src = BASE_URL + '/r.js';
       rs.async = true;
       document.head.appendChild(rs);
+    }
+
+    function loadRecorderWhenAllowed() {
+      if (analyticsConsentAllowsTracking()) {
+        loadRecorder();
+        return;
+      }
+      var tryLoad = function() {
+        if (analyticsConsentAllowsTracking()) {
+          window.removeEventListener('etiquetta:consent', tryLoad);
+          window.removeEventListener('etiquetta:consent-ready', tryLoad);
+          loadRecorder();
+        }
+      };
+      window.addEventListener('etiquetta:consent', tryLoad);
+      window.addEventListener('etiquetta:consent-ready', tryLoad);
     }
 
     function loadTagManager() {
@@ -685,18 +767,32 @@
       if (dbgToken) tmUrl += '?debug=' + encodeURIComponent(dbgToken);
       tms.src = tmUrl;
       tms.async = true;
-      tms.onload = loadRecorder;
-      tms.onerror = loadRecorder;
+      tms.onload = loadRecorderWhenAllowed;
+      tms.onerror = loadRecorderWhenAllowed;
       document.head.appendChild(tms);
     }
 
     if (!window.__ETIQUETTA_CONSENT_LOADED__) {
       var cs = document.createElement('script');
-      cs.src = BASE_URL + '/c.js';
+      cs.src = BASE_URL + '/c.js?v=2';
       cs.setAttribute('data-site', SITE_ID);
       cs.async = true;
       cs.onload = loadTagManager;
-      cs.onerror = loadTagManager; // Load TM even if consent fails (404 = not configured)
+      cs.onerror = function() {
+        // Consent script unreachable — mark the lookup as unavailable so
+        // tracking isn't stuck on "loading" forever, then load TM anyway.
+        if (!window.__ETIQUETTA_CONSENT_LOADED__) {
+          window.__ETIQUETTA_CONSENT_STATUS__ = "unavailable";
+          try {
+            window.dispatchEvent(new CustomEvent("etiquetta:consent-ready", { detail: { status: "unavailable" } }));
+          } catch(e) {
+            var evt = document.createEvent("CustomEvent");
+            evt.initCustomEvent("etiquetta:consent-ready", true, true, { status: "unavailable" });
+            window.dispatchEvent(evt);
+          }
+        }
+        loadTagManager();
+      };
       document.head.appendChild(cs);
     } else {
       loadTagManager();
