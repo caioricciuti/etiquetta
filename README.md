@@ -122,6 +122,38 @@ Environment variables (or `.env` file):
 | `ETIQUETTA_PORT`          | `3456`   | HTTP server port                                                |
 | `ETIQUETTA_DATA_DIR`      | `./data` | Database storage directory                                      |
 | `ETIQUETTA_SECURE_COOKIES`| `false`  | Set to `true` whenever users access Etiquetta over HTTPS, including behind a reverse proxy |
+| `ETIQUETTA_STORAGE`       | `duckdb` | Set to `ducklake` to store event data in a DuckLake catalog (see below) |
+
+## DuckLake Storage (experimental, opt-in)
+
+By default Etiquetta stores everything in a single DuckDB file. Setting
+`ETIQUETTA_STORAGE=ducklake` moves the append-only event tables (`events`,
+`performance`, `errors`) into a [DuckLake](https://ducklake.select) catalog under
+`{data-dir}/lake` — Parquet data files plus a SQL catalog with snapshots and
+time-travel. Metadata (domains, users, settings) stays in the DuckDB file.
+
+Why: far more compact storage, native snapshot/time-travel history, and it
+removes the buffer→parquet→load ingestion path that is the historical source of
+storage bugs. All dashboard queries work unchanged (a main-first `search_path`
+routes event tables to the lake).
+
+**Enabling it is a one-way migration** — the event tables are copied into the
+lake and dropped from the DuckDB file. Before the first transition Etiquetta
+automatically writes a rollback snapshot to `{data-dir}/etiquetta.duckdb.pre-ducklake`.
+
+```bash
+# 1. (recommended) take a backup first
+etiquetta backup --output ./etiquetta-backup.tar.zst
+# 2. stop, enable, start
+etiquetta stop
+ETIQUETTA_STORAGE=ducklake etiquetta serve   # or add it to your .env / service
+```
+
+To roll back: stop the server, restore `etiquetta.duckdb.pre-ducklake` over
+`etiquetta.duckdb`, remove `{data-dir}/lake`, and unset `ETIQUETTA_STORAGE`.
+
+The extensions (`ducklake`, `httpfs`, `icu`) are installed on first run and
+require network access at that point.
 
 ## Production Backups
 
