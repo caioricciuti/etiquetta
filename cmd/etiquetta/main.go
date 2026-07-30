@@ -63,6 +63,7 @@ func init() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(duckLakeMigrateCmd)
 }
 
 // getEnvOr returns the env var value or a fallback
