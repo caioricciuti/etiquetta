@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './components/theme/theme-provider'
 import { DomainPicker } from './components/DomainPicker'
 import { FeatureBadge } from './components/FeatureGate'
+import { ProGate } from './components/ProGate'
 import {
   BarChart3,
   Settings as SettingsIcon,
@@ -490,19 +491,19 @@ function AppLayout() {
               <Route path="/live" element={<Live />} />
               <Route path="/compare" element={<Compare />} />
               <Route path="/events" element={<Events />} />
-              <Route path="/errors" element={<Errors />} />
-              <Route path="/funnels" element={<Funnels />} />
+              <Route path="/errors" element={<ProGate feature="error_tracking"><Errors /></ProGate>} />
+              <Route path="/funnels" element={<ProGate feature="funnels"><Funnels /></ProGate>} />
               <Route path="/heatmaps" element={<Heatmaps />} />
-              <Route path="/goals" element={<Goals />} />
-              <Route path="/cohorts" element={<Cohorts />} />
-              <Route path="/retention" element={<Retention />} />
-              <Route path="/alerts" element={<Alerts />} />
+              <Route path="/goals" element={<ProGate feature="funnels"><Goals /></ProGate>} />
+              <Route path="/cohorts" element={<ProGate feature="funnels"><Cohorts /></ProGate>} />
+              <Route path="/retention" element={<ProGate feature="funnels"><Retention /></ProGate>} />
+              <Route path="/alerts" element={<ProGate feature="alerts"><Alerts /></ProGate>} />
               <Route path="/bots" element={<BotAnalysis />} />
-              <Route path="/replays" element={<ReplayList />} />
-              <Route path="/replays/settings" element={<ReplaySettings />} />
-              <Route path="/replays/:sessionId" element={<ReplayPlayer />} />
+              <Route path="/replays" element={<ProGate feature="session_replay"><ReplayList /></ProGate>} />
+              <Route path="/replays/settings" element={<ProGate feature="session_replay"><ReplaySettings /></ProGate>} />
+              <Route path="/replays/:sessionId" element={<ProGate feature="session_replay"><ReplayPlayer /></ProGate>} />
               <Route path="/connections" element={<Connections />} />
-              <Route path="/fraud" element={<AdFraud />} />
+              <Route path="/fraud" element={<ProGate feature="ad_fraud"><AdFraud /></ProGate>} />
               <Route path="/explorer" element={<Explorer />} />
               <Route path="/install-check" element={<InstallCheck />} />
               <Route path="/docs" element={<Docs />} />
@@ -514,16 +515,16 @@ function AppLayout() {
               <Route path="/settings/tracking" element={<TrackingSettings />} />
               <Route path="/settings/email" element={<EmailSettings />} />
               <Route path="/settings/geoip" element={<GeoIPSettings />} />
-              <Route path="/settings/sso" element={<SSOSettings />} />
+              <Route path="/settings/sso" element={<ProGate feature="sso"><SSOSettings /></ProGate>} />
               <Route path="/settings/connections" element={<ConnectionsSettings />} />
               <Route path="/settings/api-keys" element={<ApiKeysSettings />} />
               <Route path="/settings/account" element={<AccountSettings />} />
-              <Route path="/settings/users" element={<UsersSettings />} />
+              <Route path="/settings/users" element={<ProGate feature="multi_user"><UsersSettings /></ProGate>} />
               <Route path="/privacy" element={<PrivacyCenter />} />
-              <Route path="/consent" element={<ConsentDashboard />} />
-              <Route path="/consent/settings" element={<ConsentConfig />} />
-              <Route path="/tag-manager" element={<TagManager />} />
-              <Route path="/tag-manager/:containerId" element={<TagManagerContainer />} />
+              <Route path="/consent" element={<ProGate feature="consent"><ConsentDashboard /></ProGate>} />
+              <Route path="/consent/settings" element={<ProGate feature="consent"><ConsentConfig /></ProGate>} />
+              <Route path="/tag-manager" element={<ProGate feature="tag_manager"><TagManager /></ProGate>} />
+              <Route path="/tag-manager/:containerId" element={<ProGate feature="tag_manager"><TagManagerContainer /></ProGate>} />
               <Route path="/migrate" element={<Migrate />} />
               <Route path="/settings/license" element={
                 <div className="p-6 max-w-4xl mx-auto">

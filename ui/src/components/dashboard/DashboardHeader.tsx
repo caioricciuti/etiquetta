@@ -138,8 +138,8 @@ export function DashboardHeader() {
               }
             }}
           >
-            <SelectTrigger className="w-[140px] h-9 text-xs">
-              <Bot className="h-3.5 w-3.5 mr-1.5" />
+            <SelectTrigger className="w-[168px] h-9 text-sm">
+              <Bot className="h-4 w-4 mr-1.5 shrink-0" />
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
