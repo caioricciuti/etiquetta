@@ -46,6 +46,7 @@ import {
   Target,
   LineChart,
   Layers,
+  BookOpen,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -127,6 +128,7 @@ const SharedDashboard = lazyNamed(() => import('./pages/SharedDashboard'), 'Shar
 const Live = lazyNamed(() => import('./pages/Live'), 'Live')
 const Heatmaps = lazyNamed(() => import('./pages/Heatmaps'), 'Heatmaps')
 const InstallCheck = lazyNamed(() => import('./pages/InstallCheck'), 'InstallCheck')
+const Docs = lazyNamed(() => import('./pages/Docs'), 'Docs')
 
 function RouteFallback() {
   return (
@@ -311,6 +313,7 @@ function AppSidebar() {
     { path: '/privacy', name: 'Privacy Center', icon: Fingerprint, adminOnly: true },
     { path: '/explorer', name: 'Data Explorer', icon: Database, adminOnly: true },
     { path: '/install-check', name: 'Install Check', icon: PlugZap },
+    { path: '/docs', name: 'Docs', icon: BookOpen },
     { path: '/tag-manager', name: 'Tag Manager', icon: Tags, pro: 'tag_manager' },
     { path: '/migrate', name: 'Migrate', icon: Import, adminOnly: true },
   ]
@@ -474,12 +477,12 @@ function AppLayout() {
   return (
     <SidebarProvider>
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <header className="flex h-12 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger />
           <span className="font-semibold">Etiquetta</span>
         </header>
-        <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <main className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
           <div className="max-w-[1800px] mx-auto w-full h-full overflow-hidden">
             <Suspense fallback={<RouteFallback />}>
               <Routes>
@@ -502,6 +505,7 @@ function AppLayout() {
               <Route path="/fraud" element={<AdFraud />} />
               <Route path="/explorer" element={<Explorer />} />
               <Route path="/install-check" element={<InstallCheck />} />
+              <Route path="/docs" element={<Docs />} />
               {/* Settings routes */}
               <Route path="/settings" element={<Navigate to="/settings/properties" replace />} />
               <Route path="/settings/properties" element={<DomainsSettings />} />
