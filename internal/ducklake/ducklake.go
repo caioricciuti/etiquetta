@@ -11,6 +11,7 @@ package ducklake
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -46,8 +47,20 @@ func Attach(db *sql.DB, cfg Config) error {
 			return fmt.Errorf("load %s: %w", ext, err)
 		}
 	}
+	// Resolve to absolute paths. DuckLake records data-file locations relative to
+	// the DATA_PATH given at attach time, so a relative path makes the catalog
+	// only re-openable from the same working directory — absolute keeps it
+	// portable regardless of where the process runs.
+	catalog, err := filepath.Abs(cfg.CatalogPath)
+	if err != nil {
+		return fmt.Errorf("resolve catalog path: %w", err)
+	}
+	data, err := filepath.Abs(cfg.DataPath)
+	if err != nil {
+		return fmt.Errorf("resolve data path: %w", err)
+	}
 	attach := fmt.Sprintf("ATTACH IF NOT EXISTS 'ducklake:%s' AS %s (DATA_PATH '%s')",
-		sqlEscape(cfg.CatalogPath), cfg.alias(), sqlEscape(cfg.DataPath))
+		sqlEscape(catalog), cfg.alias(), sqlEscape(data))
 	if _, err := db.Exec(attach); err != nil {
 		return fmt.Errorf("attach ducklake catalog: %w", err)
 	}
