@@ -173,6 +173,72 @@ func TestPendingParquetIsRecoveredIdempotentlyOnStartup(t *testing.T) {
 	}
 }
 
+// TestFlushLoadsIntoConstraintlessTable reproduces the v2.0.0 regression where
+// databases whose tables were created by an older schema (no PRIMARY KEY) could
+// not ingest: DuckDB rejects "ON CONFLICT DO NOTHING" without a constraint, so
+// every flush failed and was quarantined. The loader must fall back to a plain
+// insert on such tables.
+func TestFlushLoadsIntoConstraintlessTable(t *testing.T) {
+	root := t.TempDir()
+	db, err := database.New(filepath.Join(root, "etiquetta.duckdb"))
+	if err != nil {
+		t.Fatalf("open DuckDB: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate DuckDB: %v", err)
+	}
+	conn := db.Conn()
+
+	// Recreate `events` with the same columns but no constraints (CTAS drops
+	// PRIMARY KEY), simulating a database created by an older version.
+	for _, stmt := range []string{
+		`CREATE TABLE events_nopk AS SELECT * FROM events WHERE 1=0`,
+		`DROP TABLE events`,
+		`ALTER TABLE events_nopk RENAME TO events`,
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("rebuild constraintless events (%q): %v", stmt, err)
+		}
+	}
+	var constraints int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.table_constraints
+		 WHERE table_name = 'events' AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')`,
+	).Scan(&constraints); err != nil {
+		t.Fatalf("check constraints: %v", err)
+	}
+	if constraints != 0 {
+		t.Fatalf("test setup: events still has %d constraints, want 0", constraints)
+	}
+
+	tempDir := filepath.Join(root, "buffer_tmp")
+	event := testEvent("constraintless-event")
+	path, err := writeParquet("events", []Event{event}, tempDir)
+	if err != nil {
+		t.Fatalf("write pending parquet: %v", err)
+	}
+
+	mgr := NewBufferManager(conn, BufferConfig{
+		Threshold:    100,
+		FlushTimeout: time.Hour,
+		TempDir:      tempDir,
+	})
+	defer mgr.Close(context.Background())
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		qErr := conn.QueryRow("SELECT COUNT(*) FROM events WHERE id = ?", event.ID).Scan(&count)
+		_, statErr := os.Stat(path)
+		if qErr == nil && count == 1 && errors.Is(statErr, os.ErrNotExist) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event never loaded into constraintless events table (the v2.0.0 ON CONFLICT regression)")
+}
+
 func TestStartupRemovesTruncatedTempAndIgnoresQuarantined(t *testing.T) {
 	state := &bufferTestDB{}
 	db := sql.OpenDB(&bufferTestConnector{state: state})

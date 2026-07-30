@@ -170,6 +170,11 @@ type BufferManager struct {
 
 	writerCtx    context.Context
 	writerCancel context.CancelFunc
+
+	// onConflictCache remembers whether each target table has a UNIQUE/PRIMARY
+	// KEY constraint. Only the single writer goroutine reads/writes it, so it
+	// needs no lock.
+	onConflictCache map[string]bool
 }
 
 // NewBufferManager creates and starts the buffer manager.
@@ -586,7 +591,36 @@ func (bm *BufferManager) loadParquet(ctx context.Context, job FlushJob) error {
 		return fmt.Errorf("unsupported buffer table %q", job.Table)
 	}
 	escapedPath := strings.ReplaceAll(job.FilePath, "'", "''")
-	query := fmt.Sprintf("INSERT INTO %s BY NAME SELECT * FROM read_parquet('%s') ON CONFLICT DO NOTHING", job.Table, escapedPath)
+	// ON CONFLICT DO NOTHING only binds when the table has a UNIQUE/PRIMARY KEY
+	// constraint. Tables created by older versions of Etiquetta lack it, so DuckDB
+	// would reject the clause and every flush would fail. Probe the table and fall
+	// back to a plain insert, which is correct in normal operation (ids are unique)
+	// and matches pre-v2.0.0 behavior.
+	clause := ""
+	if bm.tableSupportsOnConflict(ctx, job.Table) {
+		clause = " ON CONFLICT DO NOTHING"
+	}
+	query := fmt.Sprintf("INSERT INTO %s BY NAME SELECT * FROM read_parquet('%s')%s", job.Table, escapedPath, clause)
 	_, err := bm.db.ExecContext(ctx, query)
 	return err
+}
+
+// tableSupportsOnConflict reports whether the target table has a UNIQUE or
+// PRIMARY KEY constraint (required for ON CONFLICT to bind). The result is
+// cached; only the single writer goroutine calls this.
+func (bm *BufferManager) tableSupportsOnConflict(ctx context.Context, table string) bool {
+	if bm.onConflictCache == nil {
+		bm.onConflictCache = make(map[string]bool)
+	}
+	if v, ok := bm.onConflictCache[table]; ok {
+		return v
+	}
+	var n int
+	err := bm.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.table_constraints
+		 WHERE table_name = ? AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')`,
+		table).Scan(&n)
+	supported := err == nil && n > 0
+	bm.onConflictCache[table] = supported
+	return supported
 }
