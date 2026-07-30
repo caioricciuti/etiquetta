@@ -600,10 +600,22 @@ func (bm *BufferManager) loadParquet(ctx context.Context, job FlushJob) error {
 	if bm.tableSupportsOnConflict(ctx, job.Table) {
 		clause = " ON CONFLICT DO NOTHING"
 	}
-	query := fmt.Sprintf("INSERT INTO %s BY NAME SELECT * FROM read_parquet('%s')%s", job.Table, escapedPath, clause)
+	// events.page_duration is INT32; clamp on load so a value written by a
+	// pre-clamp build (e.g. a resumed tab's multi-day diff) can't overflow the
+	// column and quarantine the whole batch. Matches the ingest-time clamp.
+	selectExpr := "*"
+	if job.Table == "events" {
+		selectExpr = fmt.Sprintf("* REPLACE (GREATEST(LEAST(page_duration, %d), 0) AS page_duration)", maxPageDurationMs)
+	}
+	query := fmt.Sprintf("INSERT INTO %s BY NAME SELECT %s FROM read_parquet('%s')%s", job.Table, selectExpr, escapedPath, clause)
 	_, err := bm.db.ExecContext(ctx, query)
 	return err
 }
+
+// maxPageDurationMs caps page view durations at 24h; anything larger is a client
+// bug (e.g. a stale timestamp diff) that would skew analytics or overflow the
+// INT32 column. Kept in sync with the ingest-time clamp in internal/api.
+const maxPageDurationMs = 24 * 60 * 60 * 1000
 
 // tableSupportsOnConflict reports whether the target table has a UNIQUE or
 // PRIMARY KEY constraint (required for ON CONFLICT to bind). The result is
@@ -615,12 +627,18 @@ func (bm *BufferManager) tableSupportsOnConflict(ctx context.Context, table stri
 	if v, ok := bm.onConflictCache[table]; ok {
 		return v
 	}
-	var n int
-	err := bm.db.QueryRowContext(ctx,
+	// ON CONFLICT binds when the table has a UNIQUE/PRIMARY KEY constraint OR a
+	// UNIQUE index. Constraints appear in information_schema.table_constraints;
+	// a bare UNIQUE index only appears in duckdb_indexes(), so check both.
+	var constraints, uniqueIdx int
+	_ = bm.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM information_schema.table_constraints
 		 WHERE table_name = ? AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')`,
-		table).Scan(&n)
-	supported := err == nil && n > 0
+		table).Scan(&constraints)
+	_ = bm.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM duckdb_indexes() WHERE table_name = ? AND is_unique`,
+		table).Scan(&uniqueIdx)
+	supported := constraints > 0 || uniqueIdx > 0
 	bm.onConflictCache[table] = supported
 	return supported
 }

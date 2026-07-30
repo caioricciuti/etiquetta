@@ -239,6 +239,52 @@ func TestFlushLoadsIntoConstraintlessTable(t *testing.T) {
 	t.Fatalf("event never loaded into constraintless events table (the v2.0.0 ON CONFLICT regression)")
 }
 
+// TestFlushClampsOverflowingPageDuration verifies that a page_duration too large
+// for the INT32 column (e.g. a resumed tab producing a multi-day diff) is clamped
+// on load instead of overflowing and quarantining the whole batch.
+func TestFlushClampsOverflowingPageDuration(t *testing.T) {
+	root := t.TempDir()
+	db, err := database.New(filepath.Join(root, "etiquetta.duckdb"))
+	if err != nil {
+		t.Fatalf("open DuckDB: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate DuckDB: %v", err)
+	}
+	conn := db.Conn()
+
+	tempDir := filepath.Join(root, "buffer_tmp")
+	event := testEvent("overflow-duration")
+	event.PageDuration = 5957754851 // ~69 days in ms; overflows INT32
+	path, err := writeParquet("events", []Event{event}, tempDir)
+	if err != nil {
+		t.Fatalf("write pending parquet: %v", err)
+	}
+
+	mgr := NewBufferManager(conn, BufferConfig{
+		Threshold:    100,
+		FlushTimeout: time.Hour,
+		TempDir:      tempDir,
+	})
+	defer mgr.Close(context.Background())
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var pd int
+		qErr := conn.QueryRow("SELECT page_duration FROM events WHERE id = ?", event.ID).Scan(&pd)
+		_, statErr := os.Stat(path)
+		if qErr == nil && errors.Is(statErr, os.ErrNotExist) {
+			if pd != maxPageDurationMs {
+				t.Fatalf("page_duration = %d, want clamped %d", pd, maxPageDurationMs)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event with overflowing page_duration never loaded (batch would be quarantined)")
+}
+
 func TestStartupRemovesTruncatedTempAndIgnoresQuarantined(t *testing.T) {
 	state := &bufferTestDB{}
 	db := sql.OpenDB(&bufferTestConnector{state: state})

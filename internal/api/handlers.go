@@ -480,9 +480,17 @@ func (h *Handlers) parseEvent(raw map[string]interface{}, sessionID string, enri
 		event.ClickY = &y
 	}
 
-	// Extract page duration
+	// Extract page duration. Clamp to a sane range: negatives are invalid and
+	// runaway values (e.g. a resumed tab producing a multi-day diff) both skew
+	// analytics and, before the column was widened, overflowed on load.
 	if duration, ok := raw["page_duration"].(float64); ok {
 		d := int(duration)
+		const maxPageDurationMs = 24 * 60 * 60 * 1000 // 24h
+		if d < 0 {
+			d = 0
+		} else if d > maxPageDurationMs {
+			d = maxPageDurationMs
+		}
 		event.PageDuration = &d
 	}
 

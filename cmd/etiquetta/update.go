@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -178,29 +180,61 @@ func runUpdate(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("Successfully updated to %s\n", release.TagName)
 	fmt.Printf("Previous binary preserved at %s\n", previousPath)
+	fmt.Println()
+	fmt.Println("The running server keeps the old version until you restart it.")
+	printRestartInstructions(execPath)
+}
 
-	// Try to restart the service automatically
-	fmt.Println("Restarting Etiquetta...")
-
-	// Check if systemctl is available (Linux with systemd)
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		// Try systemd restart (may need sudo)
-		cmd := exec.Command("systemctl", "restart", "etiquetta")
-		if err := cmd.Run(); err != nil {
-			// Try with sudo
-			cmd = exec.Command("sudo", "systemctl", "restart", "etiquetta")
-			if err := cmd.Run(); err != nil {
-				fmt.Println("Could not restart automatically.")
-				fmt.Println("Please run: sudo systemctl restart etiquetta")
-				return
-			}
-		}
-		fmt.Println("Etiquetta restarted successfully!")
+// printRestartInstructions tells the operator how to actually restart, based on
+// how the server appears to be managed. It never assumes an "etiquetta" systemd
+// unit that may not exist — following that would leave the server stopped.
+func printRestartInstructions(execPath string) {
+	if systemdUnitExists("etiquetta") {
+		fmt.Println("Restart to load the new version:")
+		fmt.Println("  sudo systemctl restart etiquetta")
 		return
 	}
+	pidPath := filepath.Join(dataDir, "etiquetta.pid")
+	if pid, ok := runningDetachedPID(pidPath); ok {
+		fmt.Printf("The server is running detached (PID %d). Restart it with:\n", pid)
+		fmt.Printf("  %s stop\n", execPath)
+		fmt.Printf("  %s serve --detach --data %s --listen %s\n", execPath, dataDir, listenAddr)
+		return
+	}
+	fmt.Println("Restart Etiquetta to load the new version, e.g.:")
+	fmt.Printf("  %s serve            # foreground\n", execPath)
+	fmt.Printf("  %s serve --detach   # background\n", execPath)
+	fmt.Println("  (or restart your service manager if you run it under one)")
+}
 
-	// Fallback for non-systemd systems
-	fmt.Println("Please restart Etiquetta manually to use the new version.")
+// systemdUnitExists reports whether a systemd unit of the given name is known.
+// `systemctl cat` exits non-zero when the unit does not exist.
+func systemdUnitExists(name string) bool {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	return exec.Command("systemctl", "cat", name+".service").Run() == nil
+}
+
+// runningDetachedPID returns the PID from a detached-mode pid file if the
+// process is still alive.
+func runningDetachedPID(pidPath string) (int, bool) {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return 0, false
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		return 0, false
+	}
+	return pid, true
 }
 
 func downloadBytes(url string, maxBytes int64) ([]byte, error) {
