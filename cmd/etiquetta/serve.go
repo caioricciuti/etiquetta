@@ -27,6 +27,7 @@ import (
 	"github.com/caioricciuti/etiquetta/internal/connections"
 	"github.com/caioricciuti/etiquetta/internal/connections/providers"
 	"github.com/caioricciuti/etiquetta/internal/database"
+	"github.com/caioricciuti/etiquetta/internal/ducklake"
 	"github.com/caioricciuti/etiquetta/internal/enrichment"
 	"github.com/caioricciuti/etiquetta/internal/licensing"
 	"github.com/caioricciuti/etiquetta/internal/migrate"
@@ -156,17 +157,53 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Check if SQLite migration is needed
 	sqlitePath, needsMigration := database.NeedsSQLiteMigration(dataDir)
 
-	// Initialize DuckDB database
+	// Initialize DuckDB database. DuckLake storage is opt-in via
+	// ETIQUETTA_STORAGE=ducklake: the connection attaches a DuckLake catalog and
+	// routes the append-only event tables to it (metadata stays in DuckDB).
 	duckdbPath := dataDir + "/etiquetta.duckdb"
-	db, err := database.New(duckdbPath)
+	useDuckLake := os.Getenv("ETIQUETTA_STORAGE") == "ducklake"
+	var db *database.DB
+	var err error
+	if useDuckLake {
+		lakeDir := filepath.Join(dataDir, "lake")
+		if err := os.MkdirAll(filepath.Join(lakeDir, "data"), 0o755); err != nil {
+			log.Fatalf("Failed to create lake directory: %v", err)
+		}
+		// First transition into DuckLake drops the event tables from the main
+		// database, so snapshot it once beforehand as a rollback point.
+		if _, statErr := os.Stat(filepath.Join(lakeDir, "catalog.ducklake")); os.IsNotExist(statErr) {
+			backup := duckdbPath + ".pre-ducklake"
+			if _, err := os.Stat(backup); os.IsNotExist(err) {
+				if err := copyFileAtomic(duckdbPath, backup); err != nil {
+					log.Fatalf("Failed to back up database before DuckLake migration: %v", err)
+				}
+				log.Printf("Backed up database to %s before enabling DuckLake", backup)
+			}
+		}
+		db, err = database.NewWithLake(duckdbPath, database.LakeOptions{
+			CatalogPath: filepath.Join(lakeDir, "catalog.ducklake"),
+			DataPath:    filepath.Join(lakeDir, "data"),
+		})
+	} else {
+		db, err = database.New(duckdbPath)
+	}
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
-	// Run DuckDB migrations (create tables)
+	// Run DuckDB migrations (create tables in the main database).
 	if err := db.Migrate(); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Move the event tables into the lake once the schema exists. Idempotent and
+	// crash-safe; the main tables are dropped only after a verified copy.
+	if useDuckLake {
+		if err := ducklake.Lakeify(db.Conn(), ducklake.EventTables); err != nil {
+			log.Fatalf("Failed to migrate event tables into DuckLake: %v", err)
+		}
+		log.Printf("Storage: DuckLake catalog at %s", filepath.Join(dataDir, "lake"))
 	}
 
 	// Migrate data from SQLite if needed
@@ -256,6 +293,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize license manager
 	licenseManager := licensing.NewManager(cfg.DataDir + "/license.json")
 
+	// DuckLake storage (opt-in via ETIQUETTA_STORAGE=ducklake). Metadata stays in
 	// Initialize buffer manager
 	bufferCfg := buffer.DefaultConfig(duckdbPath, dataDir)
 	bufferMgr := buffer.NewBufferManager(db.Conn(), bufferCfg)
@@ -264,10 +302,29 @@ func runServe(cmd *cobra.Command, args []string) error {
 	migrateStore := migrate.NewStore(db.Conn())
 	migrateManager := migrate.NewJobManager(migrateStore, bufferMgr, dataDir)
 
-	// Initialize compaction (runs daily)
+	// Initialize compaction (runs daily). In DuckLake mode the event data lives
+	// in the lake (self-managing parquet), so run DuckLake maintenance instead of
+	// the DuckDB-space compactor.
 	compactor := buffer.NewCompactor(db.Conn(), bufferMgr)
 	compactCtx, compactCancel := context.WithCancel(context.Background())
-	compactor.StartSchedule(compactCtx, bufferCfg.CompactHour)
+	if useDuckLake {
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := ducklake.Compact(db.Conn(), "lake", 30); err != nil {
+						log.Printf("DuckLake maintenance: %v", err)
+					}
+				case <-compactCtx.Done():
+					return
+				}
+			}
+		}()
+	} else {
+		compactor.StartSchedule(compactCtx, bufferCfg.CompactHour)
+	}
 
 	// Initialize connections store and sync manager
 	connStore := connections.NewStore(db, secretKey)

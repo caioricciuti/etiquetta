@@ -592,10 +592,8 @@ func (bm *BufferManager) loadParquet(ctx context.Context, job FlushJob) error {
 	}
 	escapedPath := strings.ReplaceAll(job.FilePath, "'", "''")
 	// ON CONFLICT DO NOTHING only binds when the table has a UNIQUE/PRIMARY KEY
-	// constraint. Tables created by older versions of Etiquetta lack it, so DuckDB
-	// would reject the clause and every flush would fail. Probe the table and fall
-	// back to a plain insert, which is correct in normal operation (ids are unique)
-	// and matches pre-v2.0.0 behavior.
+	// constraint. Tables created by older versions (and DuckLake tables under the
+	// search_path routing) lack it, so probe and fall back to a plain insert.
 	clause := ""
 	if bm.tableSupportsOnConflict(ctx, job.Table) {
 		clause = " ON CONFLICT DO NOTHING"

@@ -1,15 +1,32 @@
 package database
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 )
+
+// LakeOptions, when passed to NewWithLake, routes the append-only event tables
+// into an attached DuckLake catalog. Metadata tables stay in the main database.
+type LakeOptions struct {
+	CatalogPath string // DuckLake catalog file
+	DataPath    string // directory for the lake's parquet data files
+}
+
+// CatalogName returns the catalog name DuckDB assigns to a database file (the
+// file stem), e.g. ".../etiquetta.duckdb" -> "etiquetta".
+func CatalogName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
 
 type DB struct {
 	conn *sql.DB
@@ -100,23 +117,55 @@ type Error struct {
 	GeoCountry   *string   `json:"geo_country,omitempty"`
 }
 
-func New(path string) (*DB, error) {
-	// Ensure data directory exists
+func New(path string) (*DB, error) { return newDB(path, nil) }
+
+// NewWithLake opens the database with a DuckLake catalog attached on every
+// pooled connection. Event tables resolve to the lake via a main-first
+// search_path: CREATE (migrations) targets the main database and keeps its
+// constraints, while unqualified reads/writes fall through to the lake once the
+// event tables are moved there (see internal/ducklake.Lakeify).
+func NewWithLake(path string, lake LakeOptions) (*DB, error) { return newDB(path, &lake) }
+
+func newDB(path string, lake *LakeOptions) (*DB, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	conn, err := sql.Open("duckdb", path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+	var conn *sql.DB
+	if lake == nil {
+		c, err := sql.Open("duckdb", path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open database: %w", err)
+		}
+		conn = c
+	} else {
+		esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+		boot := []string{
+			"INSTALL ducklake", "LOAD ducklake",
+			"INSTALL httpfs", "LOAD httpfs",
+			"INSTALL icu", "LOAD icu",
+			fmt.Sprintf("ATTACH IF NOT EXISTS 'ducklake:%s' AS lake (DATA_PATH '%s')", esc(lake.CatalogPath), esc(lake.DataPath)),
+			fmt.Sprintf("SET search_path='%s.main,lake.main'", CatalogName(path)),
+		}
+		connector, err := duckdb.NewConnector(path, func(execer driver.ExecerContext) error {
+			for _, stmt := range boot {
+				if _, err := execer.ExecContext(context.Background(), stmt, nil); err != nil {
+					return fmt.Errorf("boot %q: %w", stmt, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create duckdb connector: %w", err)
+		}
+		conn = sql.OpenDB(connector)
 	}
 
 	conn.SetMaxOpenConns(25)
 	conn.SetMaxIdleConns(5)
 	conn.SetConnMaxLifetime(30 * time.Minute)
 
-	// Test connection
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}

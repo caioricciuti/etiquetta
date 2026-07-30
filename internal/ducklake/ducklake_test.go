@@ -2,11 +2,68 @@ package ducklake
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
+
+// TestLakeifyDropsMainAndRoutesWrites verifies that Lakeify moves the event
+// table into the lake, drops it from main (no view), and that with a main-first
+// search_path unqualified INSERT/DELETE then route to the mutable lake table.
+func TestLakeifyDropsMainAndRoutesWrites(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("duckdb", filepath.Join(dir, "m.duckdb"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1) // keep search_path on one connection for the test
+
+	if _, err := db.Exec(`INSTALL ducklake`); err != nil {
+		t.Skipf("DuckLake unavailable: %v", err)
+	}
+	db.Exec(`LOAD ducklake`)
+	db.Exec(`CREATE TABLE events (id VARCHAR PRIMARY KEY, page_duration INTEGER)`)
+	db.Exec(`INSERT INTO events VALUES ('a', 100), ('b', 200)`)
+
+	if err := Attach(db, Config{CatalogPath: filepath.Join(dir, "l.ducklake"), DataPath: filepath.Join(dir, "d")}); err != nil {
+		t.Skipf("attach: %v", err)
+	}
+	if err := Lakeify(db, []string{"events"}); err != nil {
+		t.Fatalf("lakeify: %v", err)
+	}
+
+	var cur string
+	db.QueryRow("SELECT current_database()").Scan(&cur)
+	if k := tableKind(db, cur, "events"); k != "" {
+		t.Fatalf("main.events should be gone, got %q", k)
+	}
+	var n int
+	db.QueryRow("SELECT COUNT(*) FROM lake.events").Scan(&n)
+	if n != 2 {
+		t.Fatalf("lake.events = %d, want 2", n)
+	}
+
+	// Main-first search_path: unqualified writes route to the lake.
+	db.Exec(fmt.Sprintf("SET search_path='%s.main,lake.main'", cur))
+	if _, err := db.Exec("INSERT INTO events VALUES ('big', 5957754851)"); err != nil {
+		t.Fatalf("unqualified insert (overflow value into lake BIGINT): %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM events WHERE id = 'a'"); err != nil {
+		t.Fatalf("unqualified delete routed to lake: %v", err)
+	}
+	db.QueryRow("SELECT COUNT(*) FROM lake.events").Scan(&n)
+	if n != 2 {
+		t.Fatalf("after insert+delete lake.events = %d, want 2", n)
+	}
+
+	// Idempotent: re-running is a no-op.
+	if err := Lakeify(db, []string{"events"}); err != nil {
+		t.Fatalf("lakeify re-run: %v", err)
+	}
+}
 
 // TestMigrateFromDuckDBPreservesData builds a source DuckDB (including a value
 // that overflows INT32, the bug that broke production), migrates it into a
