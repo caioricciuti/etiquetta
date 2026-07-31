@@ -153,7 +153,11 @@ func postJSON(ctx context.Context, url string, body []byte, signature string) er
 // allowPrivateWebhooks lets self-hosters deliberately target internal
 // services (ntfy, an internal Slack proxy, …). Off by default: without it a
 // webhook URL is an admin-reachable SSRF primitive into the host's network.
-var allowPrivateWebhooks = os.Getenv("ETIQUETTA_ALLOW_PRIVATE_WEBHOOKS") == "true"
+// Read lazily (not as a package var) so a value loaded from .env at startup is
+// honored — a package var would freeze before .env is applied.
+func allowPrivateWebhooks() bool {
+	return os.Getenv("ETIQUETTA_ALLOW_PRIVATE_WEBHOOKS") == "true"
+}
 
 func isPublicWebhookIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
@@ -181,7 +185,7 @@ func secureWebhookDial(ctx context.Context, network, addr string) (net.Conn, err
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	var lastErr error
 	for _, ia := range ipAddrs {
-		if !allowPrivateWebhooks && !isPublicWebhookIP(ia.IP) {
+		if !allowPrivateWebhooks() && !isPublicWebhookIP(ia.IP) {
 			return nil, fmt.Errorf("webhook destination %s resolves to a private or internal address (set ETIQUETTA_ALLOW_PRIVATE_WEBHOOKS=true to allow)", host)
 		}
 		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ia.IP.String(), port))

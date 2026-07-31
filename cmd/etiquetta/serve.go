@@ -157,11 +157,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Check if SQLite migration is needed
 	sqlitePath, needsMigration := database.NeedsSQLiteMigration(dataDir)
 
-	// Initialize DuckDB database. DuckLake storage is opt-in via
-	// ETIQUETTA_STORAGE=ducklake: the connection attaches a DuckLake catalog and
-	// routes the append-only event tables to it (metadata stays in DuckDB).
+	// Initialize DuckDB database. Storage backend is selected by ETIQUETTA_STORAGE:
+	// DuckLake is the default — it attaches a DuckLake catalog and routes the
+	// append-only event tables to it (metadata stays in DuckDB). Set
+	// ETIQUETTA_STORAGE=duckdb to keep everything in the single DuckDB file.
+	// Enabling DuckLake on an existing DuckDB install is a safe, one-way
+	// migration: the event tables are copied to the lake and the DuckDB file is
+	// snapshotted to <db>.pre-ducklake first (see below).
 	duckdbPath := dataDir + "/etiquetta.duckdb"
-	useDuckLake := os.Getenv("ETIQUETTA_STORAGE") == "ducklake"
+	storage := strings.ToLower(strings.TrimSpace(os.Getenv("ETIQUETTA_STORAGE")))
+	if storage == "" {
+		storage = "ducklake"
+	}
+	useDuckLake := storage == "ducklake"
 	var db *database.DB
 	var err error
 	if useDuckLake {
@@ -170,8 +178,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 			log.Fatalf("Failed to create lake directory: %v", err)
 		}
 		// First transition into DuckLake drops the event tables from the main
-		// database, so snapshot it once beforehand as a rollback point.
-		if _, statErr := os.Stat(filepath.Join(lakeDir, "catalog.ducklake")); os.IsNotExist(statErr) {
+		// database, so snapshot it once beforehand as a rollback point. Skip on a
+		// brand-new install: there's no DuckDB file yet, so nothing to protect.
+		_, dbExists := os.Stat(duckdbPath)
+		catalogExists := false
+		if _, statErr := os.Stat(filepath.Join(lakeDir, "catalog.ducklake")); statErr == nil {
+			catalogExists = true
+		}
+		if !catalogExists && dbExists == nil {
 			backup := duckdbPath + ".pre-ducklake"
 			if _, err := os.Stat(backup); os.IsNotExist(err) {
 				if err := copyFileAtomic(duckdbPath, backup); err != nil {
@@ -293,7 +307,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize license manager
 	licenseManager := licensing.NewManager(cfg.DataDir + "/license.json")
 
-	// DuckLake storage (opt-in via ETIQUETTA_STORAGE=ducklake). Metadata stays in
 	// Initialize buffer manager
 	bufferCfg := buffer.DefaultConfig(duckdbPath, dataDir)
 	bufferMgr := buffer.NewBufferManager(db.Conn(), bufferCfg)

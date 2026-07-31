@@ -16,6 +16,7 @@ data/license.json
 config.json
 .env
 .env.*
+!.env.example
 
 # Keys
 keys/

@@ -115,42 +115,67 @@ sudo certbot --nginx -d your-domain.com
 
 ## Configuration
 
-Environment variables (or `.env` file):
+Etiquetta reads configuration from environment variables. On startup it also
+loads a `.env` file from the working directory, so you can keep settings in a
+file instead of exporting them. Copy [`.env.example`](.env.example) to `.env`
+and edit what you need.
 
-| Variable                  | Default  | Description                                                     |
-| ------------------------- | -------- | --------------------------------------------------------------- |
-| `ETIQUETTA_PORT`          | `3456`   | HTTP server port                                                |
-| `ETIQUETTA_DATA_DIR`      | `./data` | Database storage directory                                      |
-| `ETIQUETTA_SECURE_COOKIES`| `false`  | Set to `true` whenever users access Etiquetta over HTTPS, including behind a reverse proxy |
-| `ETIQUETTA_STORAGE`       | `duckdb` | Set to `ducklake` to store event data in a DuckLake catalog (see below) |
+- A **real environment variable always wins** over the `.env` file. So
+  `ETIQUETTA_STORAGE=duckdb etiquetta serve` overrides a `.env` value for that
+  run.
+- Point at a different file with `ETIQUETTA_ENV_FILE=/path/to/file`.
+- A missing `.env` is fine — it's the normal case when you set env vars directly.
 
-## DuckLake Storage (experimental, opt-in)
+| Variable                        | Default              | Description                                                                                  |
+| ------------------------------- | -------------------- | -------------------------------------------------------------------------------------------- |
+| `ETIQUETTA_PORT`                | `:3456`              | HTTP listen address. A bare number (`3456`) or a full address (`:3456`) both work.           |
+| `ETIQUETTA_DATA_DIR`            | `./data`             | Directory for the database, GeoIP db, replays, and buffer temp files.                        |
+| `ETIQUETTA_STORAGE`             | `ducklake`           | Storage backend. `ducklake` (default) or `duckdb` for the single-file backend (see below).   |
+| `ETIQUETTA_SECURE_COOKIES`      | `false`              | Set `true` when browsers reach Etiquetta over HTTPS (including behind a TLS-terminating proxy). |
+| `ETIQUETTA_USE_ROLLUPS`         | `false`              | Serve dashboard stats from pre-aggregated daily rollups. Faster on large datasets.           |
+| `ETIQUETTA_BUFFER_THRESHOLD`    | `50000`              | Rows buffered before a flush.                                                                 |
+| `ETIQUETTA_BUFFER_TIMEOUT`      | `30s`                | Max time between flushes (Go duration, e.g. `30s`, `1m`).                                     |
+| `ETIQUETTA_BUFFER_TEMP_DIR`     | `{DATA_DIR}/buffer_tmp` | Where parquet files are staged before load.                                               |
+| `ETIQUETTA_ALLOW_PRIVATE_WEBHOOKS` | `false`           | Allow alert webhooks to target private/internal IPs. Off by default (SSRF guard).            |
+| `ETIQUETTA_ENV_FILE`            | `.env`               | Path to the env file to load at startup.                                                     |
 
-By default Etiquetta stores everything in a single DuckDB file. Setting
-`ETIQUETTA_STORAGE=ducklake` moves the append-only event tables (`events`,
-`performance`, `errors`) into a [DuckLake](https://ducklake.select) catalog under
+## DuckLake Storage (default)
+
+Etiquetta stores the append-only event tables (`events`, `performance`,
+`errors`) in a [DuckLake](https://ducklake.select) catalog under
 `{data-dir}/lake` — Parquet data files plus a SQL catalog with snapshots and
 time-travel. Metadata (domains, users, settings) stays in the DuckDB file.
 
-Why: far more compact storage, native snapshot/time-travel history, and it
-removes the buffer→parquet→load ingestion path that is the historical source of
-storage bugs. All dashboard queries work unchanged (a main-first `search_path`
-routes event tables to the lake).
+This is the **default backend** for new and existing installs. To keep
+everything in a single DuckDB file instead, set `ETIQUETTA_STORAGE=duckdb`.
 
-**Enabling it is a one-way migration** — the event tables are copied into the
-lake and dropped from the DuckDB file. Before the first transition Etiquetta
-automatically writes a rollback snapshot to `{data-dir}/etiquetta.duckdb.pre-ducklake`.
+Why it's the default: far more compact storage, native snapshot/time-travel
+history, and it removes the buffer→parquet→load ingestion path that was the
+historical source of storage bugs (including the INT32 `page_duration` overflow).
+All dashboard queries work unchanged — a main-first `search_path` routes the
+event tables to the lake.
+
+**Switching an existing DuckDB install to DuckLake is a safe, one-way
+migration** — the event tables are copied into the lake and dropped from the
+DuckDB file. Before the first transition Etiquetta automatically writes a
+rollback snapshot to `{data-dir}/etiquetta.duckdb.pre-ducklake`.
 
 ```bash
-# 1. (recommended) take a backup first
+# Existing install being upgraded — take a backup first (recommended):
 etiquetta backup --output ./etiquetta-backup.tar.zst
-# 2. stop, enable, start
 etiquetta stop
-ETIQUETTA_STORAGE=ducklake etiquetta serve   # or add it to your .env / service
+etiquetta serve            # DuckLake is the default; nothing to set
 ```
 
-To roll back: stop the server, restore `etiquetta.duckdb.pre-ducklake` over
-`etiquetta.duckdb`, remove `{data-dir}/lake`, and unset `ETIQUETTA_STORAGE`.
+To opt out and keep the single-file backend:
+
+```bash
+ETIQUETTA_STORAGE=duckdb etiquetta serve   # or set it in your .env
+```
+
+To roll back a DuckLake migration: stop the server, restore
+`etiquetta.duckdb.pre-ducklake` over `etiquetta.duckdb`, remove `{data-dir}/lake`,
+and set `ETIQUETTA_STORAGE=duckdb`.
 
 The extensions (`ducklake`, `httpfs`, `icu`) are installed on first run and
 require network access at that point.

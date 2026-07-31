@@ -6,6 +6,10 @@ import (
 )
 
 func TestRunServeReturnsListenFailureAfterCleanup(t *testing.T) {
+	// Pin the single-file DuckDB backend: this test is about surfacing a listener
+	// failure, not storage, and must not reach for the DuckLake extensions.
+	t.Setenv("ETIQUETTA_STORAGE", "duckdb")
+
 	previousDataDir := dataDir
 	previousListenAddr := listenAddr
 	previousDetach := detach

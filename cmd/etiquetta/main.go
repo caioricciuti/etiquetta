@@ -47,6 +47,10 @@ Documentation: https://github.com/caioricciuti/etiquetta`,
 }
 
 func init() {
+	// Load .env before anything reads configuration, so the flag defaults below
+	// and every os.Getenv downstream see it. Real env vars still take precedence.
+	loadDotEnv()
+
 	// Set version in API package for /api/version endpoint
 	api.Version = Version
 

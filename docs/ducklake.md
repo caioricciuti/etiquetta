@@ -1,13 +1,17 @@
 # DuckLake Storage
 
-Etiquetta can store its high-write event data in a [DuckLake](https://ducklake.select)
-catalog instead of the single DuckDB file. It is **opt-in** and **off by default**.
+Etiquetta stores its high-write event data in a [DuckLake](https://ducklake.select)
+catalog. This is the **default backend** (`ETIQUETTA_STORAGE=ducklake`) for new
+and existing installs.
 
-Enable it by setting `ETIQUETTA_STORAGE=ducklake`.
+To keep everything in the single DuckDB file instead, set
+`ETIQUETTA_STORAGE=duckdb`. On an existing DuckDB install, leaving the variable
+unset switches it to DuckLake on the next start — a safe, one-way migration that
+snapshots the DuckDB file first (see [Enabling](#enabling)).
 
 ## What changes
 
-| | Default (`duckdb`) | `ducklake` |
+| | `duckdb` | Default (`ducklake`) |
 | --- | --- | --- |
 | `events`, `performance`, `errors` | tables in `etiquetta.duckdb` | Parquet files + catalog under `{data-dir}/lake` |
 | metadata (`domains`, `users`, `settings`, …) | `etiquetta.duckdb` | `etiquetta.duckdb` (unchanged) |
@@ -40,14 +44,16 @@ and the `page_duration` INT32 overflow is structurally impossible (BIGINT).
 
 ## Enabling
 
-The first transition is a one-way migration (event tables are moved into the
-lake and dropped from the DuckDB file). Etiquetta writes a rollback snapshot to
+DuckLake is the default, so a fresh install needs no configuration. When an
+existing DuckDB install first starts on DuckLake, the transition is a one-way
+migration (event tables are moved into the lake and dropped from the DuckDB
+file). Etiquetta writes a rollback snapshot to
 `{data-dir}/etiquetta.duckdb.pre-ducklake` before doing so.
 
 ```bash
-etiquetta backup --output ./etiquetta-backup.tar.zst   # recommended
+etiquetta backup --output ./etiquetta-backup.tar.zst   # recommended for upgrades
 etiquetta stop
-ETIQUETTA_STORAGE=ducklake etiquetta serve
+etiquetta serve                                         # DuckLake is the default
 ```
 
 Evaluate first without switching the live server — build a lake copy alongside
@@ -63,7 +69,7 @@ etiquetta ducklake-migrate --data ./data
 etiquetta stop
 mv {data-dir}/etiquetta.duckdb.pre-ducklake {data-dir}/etiquetta.duckdb
 rm -rf {data-dir}/lake
-# unset ETIQUETTA_STORAGE, then start again
+# set ETIQUETTA_STORAGE=duckdb (so it doesn't migrate again), then start
 ```
 
 ## Backups
